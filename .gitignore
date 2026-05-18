@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Documentación interna (alcance de producto, negocio, roadmap, bitácora)
+MVP_SPEC.md
+HISTORIAL.md
+AGENTS.md
+CLAUDE.md
+
+# Reglas y contexto local del IDE (referencian docs internos)
+.cursor/

@@ -24,3 +24,12 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* mapbox-gl-draw sobre MapLibre: cursores y clases de modo */
+.maplibregl-map.mode-draw_polygon .maplibregl-canvas-container.maplibregl-interactive {
+  cursor: crosshair;
+}
+
+.maplibregl-map.mouse-add .maplibregl-canvas-container.maplibregl-interactive {
+  cursor: crosshair;
+}
