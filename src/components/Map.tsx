@@ -43,11 +43,22 @@ const SATELLITE_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
+const SEARCH_MARKER_SOURCE = "terrascan-search-marker";
+
+export type FlyToOptions = {
+  lng: number;
+  lat: number;
+  zoom: number;
+  label?: string;
+};
+
 export type MapHandle = {
   startDrawing: () => void;
   closePolygon: () => boolean;
   clearPolygon: () => void;
   lockEditing: () => void;
+  flyTo: (options: FlyToOptions) => void;
+  clearSearchMarker: () => void;
 };
 
 export type MapProps = {
@@ -111,6 +122,7 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
   const mapRef = useRef<maplibregl.Map | null>(null);
   const drawRef = useRef<MapboxDraw | null>(null);
   const lockedRef = useRef(false);
+  const markerTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notifyPolygonChange = useEffectEvent(
     (feature: Feature<Polygon> | null) => {
@@ -134,10 +146,44 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     notifyPolygonChange(getActivePolygon(draw));
   }, []);
 
+  const clearSearchMarkerInternal = useCallback(() => {
+    if (markerTimeoutRef.current) {
+      clearTimeout(markerTimeoutRef.current);
+      markerTimeoutRef.current = null;
+    }
+    const map = mapRef.current;
+    if (!map?.getSource(SEARCH_MARKER_SOURCE)) return;
+    const source = map.getSource(SEARCH_MARKER_SOURCE) as maplibregl.GeoJSONSource;
+    source.setData({ type: "FeatureCollection", features: [] });
+  }, []);
+
+  const showSearchMarker = useCallback((lng: number, lat: number) => {
+    const map = mapRef.current;
+    if (!map?.getSource(SEARCH_MARKER_SOURCE)) return;
+
+    const source = map.getSource(SEARCH_MARKER_SOURCE) as maplibregl.GeoJSONSource;
+    source.setData({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [lng, lat] },
+          properties: {},
+        },
+      ],
+    });
+
+    if (markerTimeoutRef.current) clearTimeout(markerTimeoutRef.current);
+    markerTimeoutRef.current = setTimeout(() => {
+      clearSearchMarkerInternal();
+    }, 60_000);
+  }, [clearSearchMarkerInternal]);
+
   useImperativeHandle(ref, () => ({
     startDrawing: () => {
       const draw = drawRef.current;
       if (!draw || lockedRef.current) return;
+      clearSearchMarkerInternal();
       draw.changeMode("draw_polygon");
     },
     closePolygon: () => {
@@ -161,6 +207,15 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       draw.changeMode("simple_select", { featureIds: [] });
       notifyDrawModeChange(false);
       notifyCanCloseChange(false);
+    },
+    flyTo: ({ lng, lat, zoom }) => {
+      const map = mapRef.current;
+      if (!map) return;
+      map.flyTo({ center: [lng, lat], zoom, duration: 1500, essential: true });
+      showSearchMarker(lng, lat);
+    },
+    clearSearchMarker: () => {
+      clearSearchMarkerInternal();
     },
   }));
 
@@ -255,7 +310,29 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
 
     let teardownDraw: (() => void) | undefined;
 
+    const setupSearchMarker = () => {
+      if (map.getSource(SEARCH_MARKER_SOURCE)) return;
+
+      map.addSource(SEARCH_MARKER_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+
+      map.addLayer({
+        id: `${SEARCH_MARKER_SOURCE}-layer`,
+        type: "circle",
+        source: SEARCH_MARKER_SOURCE,
+        paint: {
+          "circle-radius": 9,
+          "circle-color": "#f59e0b",
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+    };
+
     const onLoad = () => {
+      setupSearchMarker();
       teardownDraw = setupDraw();
     };
 
@@ -272,12 +349,13 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     );
 
     return () => {
+      if (markerTimeoutRef.current) clearTimeout(markerTimeoutRef.current);
       teardownDraw?.();
       map.remove();
       mapRef.current = null;
       drawRef.current = null;
     };
-  }, [emitPolygon, syncCanClose]);
+  }, [emitPolygon, syncCanClose, clearSearchMarkerInternal]);
 
   return (
     <div

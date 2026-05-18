@@ -1,6 +1,8 @@
 "use client";
 
+import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
+import type { FlyToLocation } from "@/lib/locationSearch";
 import type { Feature, Polygon } from "geojson";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -17,6 +19,15 @@ export default function MapaWorkspace() {
       setConfirmed(false);
       setIsDrawing(false);
     }
+  }, []);
+
+  const handleGoTo = useCallback((location: FlyToLocation) => {
+    mapRef.current?.flyTo({
+      lng: location.lng,
+      lat: location.lat,
+      zoom: location.zoom,
+      label: location.label,
+    });
   }, []);
 
   const handleStartDrawing = () => {
@@ -69,7 +80,9 @@ export default function MapaWorkspace() {
         onCanCloseChange={setCanClose}
       />
 
-      <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center px-4">
+      <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex flex-col items-center gap-3 px-4">
+        <LocationSearch onGoTo={handleGoTo} disabled={confirmed} />
+
         <div className="pointer-events-auto max-w-lg rounded-lg bg-black/75 px-4 py-3 text-sm text-white shadow-lg backdrop-blur-sm">
           {confirmed ? (
             <p>
@@ -91,8 +104,8 @@ export default function MapaWorkspace() {
             </p>
           ) : (
             <p>
-              Pulsá <strong>Dibujar lote</strong> y marcá el contorno de tu
-              campo en el mapa.
+              Buscá la zona o pulsá <strong>Dibujar lote</strong> y marcá el
+              contorno del campo en el mapa.
             </p>
           )}
         </div>
