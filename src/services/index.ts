@@ -1,1 +1,6 @@
-export { ApiServiceError, fetchNominatimGeocode, searchLocation } from "./apiService";
+export {
+  analyzeLote,
+  ApiServiceError,
+  fetchNominatimGeocode,
+  searchLocation,
+} from "./apiService";

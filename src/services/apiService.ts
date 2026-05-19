@@ -1,4 +1,6 @@
 import { isInPampas, PAMPAS_VIEWBOX } from "@/lib/pampasBounds";
+import type { LoteAnalysisResult } from "@/types/loteAnalysis";
+import type { Feature, Polygon } from "geojson";
 import {
   nominatimTypeToPrecision,
   zoomForPrecision,
@@ -49,6 +51,30 @@ export async function searchLocation(query: string): Promise<FlyToLocation> {
   if (!response.ok) {
     throw new ApiServiceError(
       data.error ?? "No se pudo buscar la zona.",
+      response.status,
+    );
+  }
+
+  return data;
+}
+
+/**
+ * Cliente → API interna de análisis del lote (`/api/analyze`).
+ */
+export async function analyzeLote(
+  lote: Feature<Polygon>,
+): Promise<LoteAnalysisResult> {
+  const response = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lote }),
+  });
+
+  const data = await parseJson<LoteAnalysisResult & ApiErrorBody>(response);
+
+  if (!response.ok) {
+    throw new ApiServiceError(
+      data.error ?? "No se pudo analizar el lote.",
       response.status,
     );
   }

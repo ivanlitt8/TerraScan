@@ -6,6 +6,16 @@ import {
   type FlyToLocation,
 } from "@/lib/locationSearch";
 import { ApiServiceError, searchLocation } from "@/services/apiService";
+import {
+  Box,
+  Button,
+  Callout,
+  Card,
+  Flex,
+  Text,
+  TextField,
+} from "@radix-ui/themes";
+import { Loader2, Search } from "lucide-react";
 import { FormEvent, useState } from "react";
 
 type LocationSearchProps = {
@@ -85,52 +95,72 @@ export default function LocationSearch({
   };
 
   return (
-    <div className="pointer-events-auto w-full max-w-xl">
-      <form
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-2 rounded-lg bg-black/80 p-3 shadow-lg backdrop-blur-sm"
-      >
-        <label htmlFor="location-search" className="sr-only">
-          Buscar zona
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="location-search"
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            disabled={disabled || loading}
-            placeholder="Localidad, referencia rural o coordenadas"
-            className="min-w-0 flex-1 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm text-white placeholder:text-zinc-400 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
-            autoComplete="off"
-          />
-          <button
-            type="submit"
-            disabled={disabled || loading || !query.trim()}
-            className="shrink-0 rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-600"
-          >
-            {loading ? "…" : "Ir"}
-          </button>
-        </div>
-        <p className="text-xs text-zinc-300">
-          Ej: <span className="text-zinc-200">Bolívar, Buenos Aires</span> ·{" "}
-          <span className="text-zinc-200">-36.23, -61.10</span>
-        </p>
-        <p className="text-xs text-zinc-400">
-          Te llevamos cerca del lugar. Después marcá el lote en el mapa; no es
-          precisión de puerta.
-        </p>
-        {hint && (
-          <p className="text-xs text-amber-200" role="status">
-            {hint}
-          </p>
-        )}
-        {error && (
-          <p className="text-xs text-red-300" role="alert">
-            {error}
-          </p>
-        )}
-      </form>
-    </div>
+    <Box width="100%" style={{ maxWidth: "36rem" }} className="pointer-events-auto">
+      <Card size="2" variant="surface">
+        <form onSubmit={handleSubmit}>
+          <Flex direction="column" gap="3">
+            <label htmlFor="location-search" className="sr-only">
+              Buscar zona
+            </label>
+            <Flex gap="2" align="center">
+              <Box flexGrow="1" style={{ minWidth: 0 }}>
+                <TextField.Root
+                  id="location-search"
+                  size="2"
+                  placeholder="Localidad, referencia rural o coordenadas"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  disabled={disabled || loading}
+                  autoComplete="off"
+                >
+                  <TextField.Slot side="left">
+                    <Search size={16} aria-hidden />
+                  </TextField.Slot>
+                </TextField.Root>
+              </Box>
+              <Button
+                type="submit"
+                size="2"
+                variant="solid"
+                color="jade"
+                disabled={disabled || loading || !query.trim()}
+              >
+                {loading ? (
+                  <Loader2 size={16} className="animate-spin" aria-hidden />
+                ) : (
+                  "Ir"
+                )}
+              </Button>
+            </Flex>
+
+            <Text size="1" color="gray">
+              Ej:{" "}
+              <Text as="span" color="gray" highContrast>
+                Bolívar, Buenos Aires
+              </Text>{" "}
+              ·{" "}
+              <Text as="span" color="gray" highContrast>
+                -36.23, -61.10
+              </Text>
+            </Text>
+            <Text size="1" color="gray">
+              Te llevamos cerca del lugar. Después marcá el lote en el mapa; no es
+              precisión de puerta.
+            </Text>
+
+            {hint && (
+              <Callout.Root color="amber" size="1" role="status">
+                <Callout.Text>{hint}</Callout.Text>
+              </Callout.Root>
+            )}
+            {error && (
+              <Callout.Root color="red" size="1" role="alert">
+                <Callout.Text>{error}</Callout.Text>
+              </Callout.Root>
+            )}
+          </Flex>
+        </form>
+      </Card>
+    </Box>
   );
 }

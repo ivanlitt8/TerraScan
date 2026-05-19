@@ -1,9 +1,20 @@
 "use client";
 
+import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import type { FlyToLocation } from "@/lib/locationSearch";
+import { analyzeLote, ApiServiceError } from "@/services";
+import type { LoteAnalysisResult } from "@/types/loteAnalysis";
+import {
+  Box,
+  Button,
+  Callout,
+  Flex,
+  Grid,
+} from "@radix-ui/themes";
 import type { Feature, Polygon } from "geojson";
+import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function MapaWorkspace() {
@@ -12,14 +23,30 @@ export default function MapaWorkspace() {
   const [confirmed, setConfirmed] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [canClose, setCanClose] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<LoteAnalysisResult | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
-  const handlePolygonChange = useCallback((feature: Feature<Polygon> | null) => {
-    setPolygon(feature);
-    if (feature) {
-      setConfirmed(false);
-      setIsDrawing(false);
-    }
+  const panelOpen = Boolean(analysis);
+  const showMapToolbar = !panelOpen && !isAnalyzing;
+
+  const resetAnalysis = useCallback(() => {
+    setAnalysis(null);
+    setAnalysisError(null);
+    setIsAnalyzing(false);
   }, []);
+
+  const handlePolygonChange = useCallback(
+    (feature: Feature<Polygon> | null) => {
+      setPolygon(feature);
+      if (feature) {
+        setConfirmed(false);
+        setIsDrawing(false);
+        resetAnalysis();
+      }
+    },
+    [resetAnalysis],
+  );
 
   const handleGoTo = useCallback((location: FlyToLocation) => {
     mapRef.current?.flyTo({
@@ -32,8 +59,12 @@ export default function MapaWorkspace() {
 
   const handleStartDrawing = () => {
     setConfirmed(false);
+    resetAnalysis();
+    mapRef.current?.unlockEditing();
     mapRef.current?.clearPolygon();
-    mapRef.current?.startDrawing();
+    requestAnimationFrame(() => {
+      mapRef.current?.startDrawing();
+    });
   };
 
   const handleCloseContour = () => {
@@ -43,18 +74,46 @@ export default function MapaWorkspace() {
   const handleClear = () => {
     mapRef.current?.clearPolygon();
     setConfirmed(false);
+    resetAnalysis();
   };
 
-  const handleConfirm = () => {
-    if (!polygon) return;
+  const handleConfirm = async () => {
+    if (!polygon || isAnalyzing) return;
     setConfirmed(true);
+    setAnalysisError(null);
+    setAnalysis(null);
+    setIsAnalyzing(true);
     mapRef.current?.lockEditing();
+
+    try {
+      const result = await analyzeLote(polygon);
+      setAnalysis(result);
+    } catch (error) {
+      const message =
+        error instanceof ApiServiceError
+          ? error.message
+          : "No se pudo completar el análisis del lote.";
+      setAnalysisError(message);
+      setConfirmed(false);
+      mapRef.current?.unlockEditing();
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
-  const handleStartOver = () => {
+  const handleClearLote = () => {
     setConfirmed(false);
+    resetAnalysis();
     mapRef.current?.clearPolygon();
   };
+
+  useEffect(() => {
+    if (!panelOpen) return;
+    const id = requestAnimationFrame(() => {
+      mapRef.current?.resize();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [panelOpen]);
 
   useEffect(() => {
     if (!isDrawing) return;
@@ -71,99 +130,162 @@ export default function MapaWorkspace() {
   }, [isDrawing]);
 
   return (
-    <main className="relative h-dvh w-full overflow-hidden">
-      <Map
-        ref={mapRef}
-        className="h-full w-full"
-        onPolygonChange={handlePolygonChange}
-        onDrawModeChange={setIsDrawing}
-        onCanCloseChange={setCanClose}
-      />
+    <Grid
+      height="100%"
+      width="100%"
+      gap="0"
+      className="overflow-hidden transition-[grid-template-columns] duration-300 ease-out"
+      columns={
+        panelOpen
+          ? { initial: "1fr", lg: "minmax(0, 1fr) min(30%, 420px)" }
+          : "1fr"
+      }
+      rows={
+        panelOpen
+          ? { initial: "minmax(0, 1fr) minmax(0, 42dvh)", lg: "1fr" }
+          : "1fr"
+      }
+    >
+      <Flex
+        direction="column"
+        position="relative"
+        height="100%"
+        style={{ minHeight: 0, minWidth: 0 }}
+      >
+        <Box
+          position="absolute"
+          top="4"
+          left="0"
+          right="0"
+          className="z-10 pointer-events-none"
+        >
+          <Flex justify="center" px="4">
+            <LocationSearch onGoTo={handleGoTo} disabled={confirmed || isAnalyzing} />
+          </Flex>
+        </Box>
 
-      <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex flex-col items-center gap-3 px-4">
-        <LocationSearch onGoTo={handleGoTo} disabled={confirmed} />
+        <Box flexGrow="1" style={{ minHeight: 0, minWidth: 0, position: "relative", zIndex: 0 }}>
+          <Map
+            ref={mapRef}
+            className="h-full w-full"
+            onPolygonChange={handlePolygonChange}
+            onDrawModeChange={setIsDrawing}
+            onCanCloseChange={setCanClose}
+          />
+        </Box>
 
-        <div className="pointer-events-auto max-w-lg rounded-lg bg-black/75 px-4 py-3 text-sm text-white shadow-lg backdrop-blur-sm">
-          {confirmed ? (
-            <p>
-              Lote confirmado. El análisis satelital se conectará en el próximo
-              paso. Usá <strong>Empezar de nuevo</strong> para delimitar otro
-              campo.
-            </p>
-          ) : isDrawing ? (
-            <p>
-              <strong>Dibujando:</strong> marcá cada vértice del campo. Con al
-              menos 3 puntos, pulsá <strong>Cerrar contorno</strong>, la tecla{" "}
-              <strong>Enter</strong> o el <strong>primer punto</strong> del
-              polígono.
-            </p>
-          ) : polygon ? (
-            <p>
-              Contorno cerrado. Revisá el área en el mapa y pulsá{" "}
-              <strong>Confirmar lote</strong> para continuar.
-            </p>
-          ) : (
-            <p>
-              Buscá la zona o pulsá <strong>Dibujar lote</strong> y marcá el
-              contorno del campo en el mapa.
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-6 z-10 flex flex-wrap justify-center gap-3 px-4">
-        {confirmed ? (
-          <button
-            type="button"
-            onClick={handleStartOver}
-            className="pointer-events-auto rounded-full bg-sky-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-sky-500"
+        {analysisError && (
+          <Box
+            position="absolute"
+            bottom="6"
+            left="50%"
+            className="z-10 pointer-events-none -translate-x-1/2"
+            style={{ maxWidth: "28rem", width: "calc(100% - 2rem)" }}
           >
-            Empezar de nuevo
-          </button>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={handleStartDrawing}
-              disabled={isDrawing}
-              className="pointer-events-auto rounded-full bg-sky-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-600"
-            >
-              {isDrawing
-                ? "Dibujando…"
-                : polygon
-                  ? "Redibujar lote"
-                  : "Dibujar lote"}
-            </button>
-            {isDrawing && (
-              <button
-                type="button"
-                onClick={handleCloseContour}
-                disabled={!canClose}
-                className="pointer-events-auto rounded-full bg-amber-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-zinc-600"
-              >
-                Cerrar contorno
-              </button>
-            )}
-            {polygon && (
-              <button
-                type="button"
-                onClick={handleClear}
-                className="pointer-events-auto rounded-full border border-white/30 bg-black/60 px-5 py-3 text-sm font-semibold text-white shadow-lg backdrop-blur-sm hover:bg-black/80"
-              >
-                Borrar
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={!polygon}
-              onClick={handleConfirm}
-              className="pointer-events-auto rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-lg transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:bg-zinc-600 disabled:text-zinc-400"
-            >
-              Confirmar lote
-            </button>
-          </>
+            <Callout.Root color="red" size="2" role="alert">
+              <Callout.Text>{analysisError}</Callout.Text>
+            </Callout.Root>
+          </Box>
         )}
-      </div>
-    </main>
+
+        {showMapToolbar && (
+          <Box
+            position="absolute"
+            bottom="6"
+            left="0"
+            right="0"
+            style={{ zIndex: 20, pointerEvents: "none" }}
+          >
+            <Flex
+              justify="center"
+              gap="3"
+              px="4"
+              wrap="wrap"
+              style={{ pointerEvents: "auto" }}
+            >
+              <Button
+                type="button"
+                radius="full"
+                size="3"
+                variant="solid"
+                color="jade"
+                disabled={isDrawing}
+                onClick={handleStartDrawing}
+              >
+                {isDrawing
+                  ? "Dibujando…"
+                  : polygon
+                    ? "Redibujar lote"
+                    : "Dibujar lote"}
+              </Button>
+              {isDrawing && (
+                <Button
+                  type="button"
+                  radius="full"
+                  size="3"
+                  variant="solid"
+                  color="amber"
+                  disabled={!canClose}
+                  onClick={handleCloseContour}
+                >
+                  Cerrar contorno
+                </Button>
+              )}
+              {polygon && (
+                <Button
+                  type="button"
+                  radius="full"
+                  size="3"
+                  variant="soft"
+                  color="gray"
+                  onClick={handleClear}
+                >
+                  Borrar
+                </Button>
+              )}
+              <Button
+                type="button"
+                radius="full"
+                size="3"
+                variant="solid"
+                color="grass"
+                disabled={!polygon || isAnalyzing}
+                onClick={() => void handleConfirm()}
+              >
+                Confirmar lote
+              </Button>
+            </Flex>
+          </Box>
+        )}
+
+        {isAnalyzing && (
+          <Box
+            position="absolute"
+            bottom="6"
+            left="0"
+            right="0"
+            className="z-10 pointer-events-none"
+          >
+            <Flex justify="center" px="4">
+              <Callout.Root size="2" color="jade" className="pointer-events-none">
+                <Callout.Icon>
+                  <Loader2 size={16} className="animate-spin" aria-hidden />
+                </Callout.Icon>
+                <Callout.Text>Analizando historial satelital…</Callout.Text>
+              </Callout.Root>
+            </Flex>
+          </Box>
+        )}
+      </Flex>
+
+      {panelOpen && analysis && (
+        <Box
+          style={{ minHeight: 0, minWidth: 0, borderTop: "1px solid var(--gray-a6)" }}
+          className="lg:border-t-0 lg:border-l"
+        >
+          <DashboardLote data={analysis} onClear={handleClearLote} />
+        </Box>
+      )}
+    </Grid>
   );
 }

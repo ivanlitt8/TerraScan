@@ -57,6 +57,8 @@ export type MapHandle = {
   closePolygon: () => boolean;
   clearPolygon: () => void;
   lockEditing: () => void;
+  unlockEditing: () => void;
+  resize: () => void;
   flyTo: (options: FlyToOptions) => void;
   clearSearchMarker: () => void;
 };
@@ -182,7 +184,8 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
   useImperativeHandle(ref, () => ({
     startDrawing: () => {
       const draw = drawRef.current;
-      if (!draw || lockedRef.current) return;
+      if (!draw) return;
+      lockedRef.current = false;
       clearSearchMarkerInternal();
       draw.changeMode("draw_polygon");
     },
@@ -208,6 +211,12 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       notifyDrawModeChange(false);
       notifyCanCloseChange(false);
     },
+    unlockEditing: () => {
+      lockedRef.current = false;
+    },
+    resize: () => {
+      mapRef.current?.resize();
+    },
     flyTo: ({ lng, lat, zoom }) => {
       const map = mapRef.current;
       if (!map) return;
@@ -230,6 +239,11 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     });
 
     mapRef.current = map;
+
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize();
+    });
+    resizeObserver.observe(containerRef.current);
 
     const syncDrawMode = (draw: MapboxDraw, mode: string) => {
       const isDrawing = mode === "draw_polygon";
@@ -349,6 +363,7 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     );
 
     return () => {
+      resizeObserver.disconnect();
       if (markerTimeoutRef.current) clearTimeout(markerTimeoutRef.current);
       teardownDraw?.();
       map.remove();
