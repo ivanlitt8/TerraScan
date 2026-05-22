@@ -4,6 +4,7 @@ import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import type { FlyToLocation } from "@/lib/locationSearch";
+import { buildMockHistoricalAnalysis } from "@/lib/mockLoteAnalysis";
 import { analyzeLote, ApiServiceError } from "@/services";
 import type { LoteAnalysisResult } from "@/types/loteAnalysis";
 import {
@@ -85,9 +86,27 @@ export default function MapaWorkspace() {
     setIsAnalyzing(true);
     mapRef.current?.lockEditing();
 
+    // Mientras no exista UI para nombrar el lote, generamos un nombre por defecto
+    // fechado. El backend exige `nombre` (1–120 chars) en el DTO `AnalyzeLoteDto`.
+    const nombre = `Lote — ${new Date().toLocaleString("es-AR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    })}`;
+
     try {
-      const result = await analyzeLote(polygon);
-      setAnalysis(result);
+      const lote = await analyzeLote({ nombre, poligonoGeoJSON: polygon });
+
+      // Combinamos los campos REALES del backend (id de Supabase, hectáreas
+      // calculadas con Turf, createdAt) con el mock histórico (NDVI + alertas)
+      // que el backend todavía no calcula — ver pendientes en back/HISTORIAL.md.
+      const historico = buildMockHistoricalAnalysis();
+      setAnalysis({
+        id: lote.id,
+        nombre: lote.nombre,
+        hectareas: lote.areaHectareas,
+        procesadoEn: lote.createdAt,
+        ...historico,
+      });
     } catch (error) {
       const message =
         error instanceof ApiServiceError

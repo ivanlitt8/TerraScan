@@ -3,6 +3,7 @@ export type {
   AlertaTipo,
   AnalyzeLoteRequestBody,
   LoteAnalysisResult,
+  LoteBackendResponse,
   NdviCampania,
   NdviEstado,
 } from "./loteAnalysis";

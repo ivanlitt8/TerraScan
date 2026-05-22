@@ -1,6 +1,8 @@
 import { isInPampas, PAMPAS_VIEWBOX } from "@/lib/pampasBounds";
-import type { LoteAnalysisResult } from "@/types/loteAnalysis";
-import type { Feature, Polygon } from "geojson";
+import type {
+  AnalyzeLoteRequestBody,
+  LoteBackendResponse,
+} from "@/types/loteAnalysis";
 import {
   nominatimTypeToPrecision,
   zoomForPrecision,
@@ -11,8 +13,13 @@ import {
 const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_USER_AGENT = "TerrascanMVP/1.0 (geocode; desarrollo local)";
 
+const BACKEND_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const ANALYZE_LOTE_ENDPOINT = `${BACKEND_BASE_URL}/api/lotes/analyze`;
+
 type ApiErrorBody = {
   error?: string;
+  message?: string | string[];
 };
 
 type NominatimResult = {
@@ -59,25 +66,89 @@ export async function searchLocation(query: string): Promise<FlyToLocation> {
 }
 
 /**
- * Cliente → API interna de análisis del lote (`/api/analyze`).
+ * Sanitiza el `Feature<Polygon>` que devuelve Mapbox Draw para que matchee
+ * exactamente el `PoligonoGeoJSONDto` del backend.
+ *
+ * Mapbox Draw inyecta un `id` en el Feature (y a veces propiedades internas
+ * en `properties`), pero el backend corre `ValidationPipe` con
+ * `whitelist: true` + `forbidNonWhitelisted: true` y rechaza cualquier
+ * propiedad no declarada (`property id should not exist`).
+ *
+ * Sólo dejamos pasar `type`, `geometry` (como objeto plano `{ type, coordinates }`)
+ * y `properties` (un objeto vacío si no había, para no enviar `undefined`).
+ */
+function sanitizePoligonoGeoJSON(
+  feature: AnalyzeLoteRequestBody["poligonoGeoJSON"],
+): AnalyzeLoteRequestBody["poligonoGeoJSON"] {
+  return {
+    type: "Feature",
+    geometry: {
+      type: "Polygon",
+      coordinates: feature.geometry.coordinates,
+    },
+    properties: feature.properties ?? {},
+  };
+}
+
+/**
+ * Cliente → backend NestJS (`POST {NEXT_PUBLIC_API_URL}/api/lotes/analyze`).
+ *
+ * Persiste el lote en Supabase (vía Prisma) y devuelve la fila completa,
+ * incluido el `id` (UUID) y `areaHectareas` calculado con Turf en el server.
  */
 export async function analyzeLote(
-  lote: Feature<Polygon>,
-): Promise<LoteAnalysisResult> {
-  const response = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lote }),
+  body: AnalyzeLoteRequestBody,
+): Promise<LoteBackendResponse> {
+  const payload: AnalyzeLoteRequestBody = {
+    nombre: body.nombre,
+    poligonoGeoJSON: sanitizePoligonoGeoJSON(body.poligonoGeoJSON),
+  };
+
+  console.info("[analyzeLote] → POST", ANALYZE_LOTE_ENDPOINT, {
+    nombre: payload.nombre,
+    vertices: payload.poligonoGeoJSON.geometry.coordinates[0]?.length ?? 0,
   });
 
-  const data = await parseJson<LoteAnalysisResult & ApiErrorBody>(response);
+  let response: Response;
+  try {
+    response = await fetch(ANALYZE_LOTE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (cause) {
+    console.error("[analyzeLote] ✕ network error", cause);
+    throw new ApiServiceError(
+      "No se pudo contactar al backend de Terrascan.",
+      0,
+    );
+  }
+
+  const data = (await parseJson<LoteBackendResponse & ApiErrorBody>(
+    response,
+  ).catch(() => ({}) as LoteBackendResponse & ApiErrorBody));
 
   if (!response.ok) {
+    const fallback =
+      typeof data.message === "string"
+        ? data.message
+        : Array.isArray(data.message)
+          ? data.message.join(" · ")
+          : data.error;
+
+    console.error("[analyzeLote] ✕ HTTP", response.status, fallback);
     throw new ApiServiceError(
-      data.error ?? "No se pudo analizar el lote.",
+      fallback ?? "No se pudo analizar el lote.",
       response.status,
     );
   }
+
+  console.info("[analyzeLote] ← OK", {
+    id: data.id,
+    nombre: data.nombre,
+    areaHectareas: data.areaHectareas,
+    createdAt: data.createdAt,
+  });
 
   return data;
 }
