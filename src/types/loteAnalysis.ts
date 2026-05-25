@@ -36,6 +36,20 @@ export type LoteBackendResponse = {
   userId: string;
 };
 
+/**
+ * Forma de cada elemento devuelto por `GET /api/lotes`.
+ *
+ * El backend hace un `select` parcial (sin `poligonoGeoJSON` ni `dataProcesada`)
+ * para que el listado sea liviano. El polígono se obtiene bajo demanda con
+ * `GET /api/lotes/:id` cuando el usuario selecciona un lote en el panel.
+ */
+export type LoteListItem = {
+  id: string;
+  nombre: string;
+  areaHectareas: number;
+  createdAt: string;
+};
+
 /** Body que enviamos al backend al confirmar un lote. */
 export type AnalyzeLoteRequestBody = {
   nombre: string;

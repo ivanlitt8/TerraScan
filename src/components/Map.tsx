@@ -44,6 +44,7 @@ const SATELLITE_STYLE: maplibregl.StyleSpecification = {
 };
 
 const SEARCH_MARKER_SOURCE = "terrascan-search-marker";
+const SAVED_POLYGON_SOURCE = "terrascan-saved-polygon";
 
 export type FlyToOptions = {
   lng: number;
@@ -61,7 +62,38 @@ export type MapHandle = {
   resize: () => void;
   flyTo: (options: FlyToOptions) => void;
   clearSearchMarker: () => void;
+  showSavedPolygon: (feature: Feature<Polygon>) => void;
+  clearSavedPolygon: () => void;
 };
+
+/**
+ * Bounding box ajustado a las coordenadas de un anillo (LinearRing) de Polygon.
+ * Usado para `map.fitBounds` cuando seleccionamos un lote guardado: queremos
+ * encuadrar exactamente el polígono sin asumir ningún padding fijo en lat/lng.
+ */
+function polygonBounds(
+  feature: Feature<Polygon>,
+): [[number, number], [number, number]] | null {
+  const ring = feature.geometry.coordinates[0];
+  if (!ring?.length) return null;
+
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+
+  for (const [lng, lat] of ring) {
+    if (lng < minLng) minLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lng > maxLng) maxLng = lng;
+    if (lat > maxLat) maxLat = lat;
+  }
+
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
+}
 
 export type MapProps = {
   className?: string;
@@ -159,6 +191,15 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     source.setData({ type: "FeatureCollection", features: [] });
   }, []);
 
+  const clearSavedPolygonInternal = useCallback(() => {
+    const map = mapRef.current;
+    if (!map?.getSource(SAVED_POLYGON_SOURCE)) return;
+    const source = map.getSource(
+      SAVED_POLYGON_SOURCE,
+    ) as maplibregl.GeoJSONSource;
+    source.setData({ type: "FeatureCollection", features: [] });
+  }, []);
+
   const showSearchMarker = useCallback((lng: number, lat: number) => {
     const map = mapRef.current;
     if (!map?.getSource(SEARCH_MARKER_SOURCE)) return;
@@ -225,6 +266,40 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     },
     clearSearchMarker: () => {
       clearSearchMarkerInternal();
+    },
+    showSavedPolygon: (feature) => {
+      const map = mapRef.current;
+      if (!map?.getSource(SAVED_POLYGON_SOURCE)) return;
+
+      const source = map.getSource(
+        SAVED_POLYGON_SOURCE,
+      ) as maplibregl.GeoJSONSource;
+
+      source.setData({
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: feature.geometry,
+            properties: {},
+          },
+        ],
+      });
+
+      clearSearchMarkerInternal();
+
+      const bounds = polygonBounds(feature);
+      if (bounds) {
+        map.fitBounds(bounds, {
+          padding: 80,
+          duration: 1500,
+          maxZoom: 16,
+          essential: true,
+        });
+      }
+    },
+    clearSavedPolygon: () => {
+      clearSavedPolygonInternal();
     },
   }));
 
@@ -345,8 +420,39 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       });
     };
 
+    const setupSavedPolygonLayer = () => {
+      if (map.getSource(SAVED_POLYGON_SOURCE)) return;
+
+      map.addSource(SAVED_POLYGON_SOURCE, {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] },
+      });
+
+      map.addLayer({
+        id: `${SAVED_POLYGON_SOURCE}-fill`,
+        type: "fill",
+        source: SAVED_POLYGON_SOURCE,
+        paint: {
+          "fill-color": "#10b981",
+          "fill-opacity": 0.18,
+        },
+      });
+
+      map.addLayer({
+        id: `${SAVED_POLYGON_SOURCE}-line`,
+        type: "line",
+        source: SAVED_POLYGON_SOURCE,
+        paint: {
+          "line-color": "#34d399",
+          "line-width": 2.5,
+          "line-opacity": 0.95,
+        },
+      });
+    };
+
     const onLoad = () => {
       setupSearchMarker();
+      setupSavedPolygonLayer();
       teardownDraw = setupDraw();
     };
 
@@ -370,7 +476,12 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       mapRef.current = null;
       drawRef.current = null;
     };
-  }, [emitPolygon, syncCanClose, clearSearchMarkerInternal]);
+  }, [
+    emitPolygon,
+    syncCanClose,
+    clearSearchMarkerInternal,
+    clearSavedPolygonInternal,
+  ]);
 
   return (
     <div

@@ -3,22 +3,30 @@
 import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
+import PanelLotesList from "@/components/PanelLotesList";
 import type { FlyToLocation } from "@/lib/locationSearch";
 import { buildMockHistoricalAnalysis } from "@/lib/mockLoteAnalysis";
 import { analyzeLote, ApiServiceError } from "@/services";
-import type { LoteAnalysisResult } from "@/types/loteAnalysis";
+import type {
+  LoteAnalysisResult,
+  LoteBackendResponse,
+} from "@/types/loteAnalysis";
 import {
   Box,
   Button,
   Callout,
   Flex,
   Grid,
+  IconButton,
+  Tooltip,
 } from "@radix-ui/themes";
 import type { Feature, Polygon } from "geojson";
-import { Loader2 } from "lucide-react";
+import { Layers, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export default function MapaWorkspace() {
+  const router = useRouter();
   const mapRef = useRef<MapHandle>(null);
   const [polygon, setPolygon] = useState<Feature<Polygon> | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -27,6 +35,7 @@ export default function MapaWorkspace() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<LoteAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [isLotesPanelOpen, setIsLotesPanelOpen] = useState(false);
 
   const panelOpen = Boolean(analysis);
   const showMapToolbar = !panelOpen && !isAnalyzing;
@@ -108,6 +117,15 @@ export default function MapaWorkspace() {
         ...historico,
       });
     } catch (error) {
+      if (error instanceof ApiServiceError && error.status === 401) {
+        const search = new URLSearchParams({
+          tab: "login",
+          error: "Tu sesión expiró. Iniciá sesión para analizar tu lote.",
+        });
+        router.replace(`/?${search.toString()}`);
+        return;
+      }
+
       const message =
         error instanceof ApiServiceError
           ? error.message
@@ -124,7 +142,21 @@ export default function MapaWorkspace() {
     setConfirmed(false);
     resetAnalysis();
     mapRef.current?.clearPolygon();
+    mapRef.current?.clearSavedPolygon();
   };
+
+  const handleAuthError = useCallback(() => {
+    const search = new URLSearchParams({
+      tab: "login",
+      error: "Tu sesión expiró. Iniciá sesión nuevamente.",
+    });
+    router.replace(`/?${search.toString()}`);
+  }, [router]);
+
+  const handleLoteFromPanel = useCallback((lote: LoteBackendResponse) => {
+    mapRef.current?.clearPolygon();
+    mapRef.current?.showSavedPolygon(lote.poligonoGeoJSON);
+  }, []);
 
   useEffect(() => {
     if (!panelOpen) return;
@@ -191,6 +223,36 @@ export default function MapaWorkspace() {
             onDrawModeChange={setIsDrawing}
             onCanCloseChange={setCanClose}
           />
+
+          <PanelLotesList
+            isOpen={isLotesPanelOpen}
+            onClose={() => setIsLotesPanelOpen(false)}
+            onLoteSelect={handleLoteFromPanel}
+            onAuthError={handleAuthError}
+          />
+
+          {!isLotesPanelOpen && (
+            <Box
+              position="absolute"
+              left="4"
+              top="4"
+              className="pointer-events-auto z-20"
+            >
+              <Tooltip content="Mis lotes" side="right">
+                <IconButton
+                  type="button"
+                  size="3"
+                  radius="full"
+                  variant="solid"
+                  color="jade"
+                  aria-label="Abrir panel de mis lotes"
+                  onClick={() => setIsLotesPanelOpen(true)}
+                >
+                  <Layers size={18} aria-hidden />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          )}
         </Box>
 
         {analysisError && (

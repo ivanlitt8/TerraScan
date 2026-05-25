@@ -2,6 +2,7 @@ import { isInPampas, PAMPAS_VIEWBOX } from "@/lib/pampasBounds";
 import type {
   AnalyzeLoteRequestBody,
   LoteBackendResponse,
+  LoteListItem,
 } from "@/types/loteAnalysis";
 import {
   nominatimTypeToPrecision,
@@ -9,6 +10,7 @@ import {
   type FlyToLocation,
   type LocationPrecision,
 } from "@/lib/locationSearch";
+import { createClient as createSupabaseBrowserClient } from "@/utils/supabase/client";
 
 const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_USER_AGENT = "TerrascanMVP/1.0 (geocode; desarrollo local)";
@@ -16,6 +18,7 @@ const NOMINATIM_USER_AGENT = "TerrascanMVP/1.0 (geocode; desarrollo local)";
 const BACKEND_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ANALYZE_LOTE_ENDPOINT = `${BACKEND_BASE_URL}/api/lotes/analyze`;
+const LIST_LOTES_ENDPOINT = `${BACKEND_BASE_URL}/api/lotes`;
 
 type ApiErrorBody = {
   error?: string;
@@ -45,8 +48,79 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 /**
+ * Recupera el `access_token` de la sesión activa de Supabase desde el cliente
+ * del navegador.
+ *
+ * Si no hay sesión (usuario nunca logueado, token expirado y refresh fallido,
+ * etc.) lanza un `ApiServiceError` con `status: 401` para que el consumidor
+ * pueda diferenciar "fallo de auth" de "fallo de red" o "error del backend".
+ */
+async function getSupabaseAccessToken(): Promise<string> {
+  const supabase = createSupabaseBrowserClient();
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error) {
+    console.error("[auth] ✕ getSession error", error);
+    throw new ApiServiceError(
+      "No pudimos verificar tu sesión. Iniciá sesión nuevamente.",
+      401,
+    );
+  }
+
+  const token = data.session?.access_token;
+  if (!token) {
+    throw new ApiServiceError(
+      "Sesión no encontrada. Iniciá sesión para continuar.",
+      401,
+    );
+  }
+
+  return token;
+}
+
+/**
+ * `fetch` autenticado contra el backend NestJS.
+ *
+ * - Obtiene el `access_token` de Supabase de forma asíncrona ANTES de disparar
+ *   la petición (el plugin de auth puede haber refrescado el token entre llamadas).
+ * - Inyecta `Authorization: Bearer <access_token>` sin pisar headers que el
+ *   caller ya hubiera definido.
+ * - Captura errores de red y los normaliza a `ApiServiceError(status: 0)`.
+ * - Si recibe `401` del backend, lo propaga como `ApiServiceError` con el
+ *   mismo status para que la UI pueda redirigir al login.
+ */
+async function authenticatedFetch(
+  url: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const accessToken = await getSupabaseAccessToken();
+
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${accessToken}`);
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, headers });
+  } catch (cause) {
+    console.error("[authenticatedFetch] ✕ network error", url, cause);
+    throw new ApiServiceError(
+      "No se pudo contactar al backend de Terrascan.",
+      0,
+    );
+  }
+
+  return response;
+}
+
+/**
  * Cliente → API interna de Next.js (`/api/geocode`).
  * Usar desde componentes con `"use client"`.
+ *
+ * No requiere `Authorization`: la ruta vive en el propio Next y sólo es un
+ * proxy al servicio público de Nominatim.
  */
 export async function searchLocation(query: string): Promise<FlyToLocation> {
   const response = await fetch(
@@ -90,11 +164,33 @@ function sanitizePoligonoGeoJSON(
   };
 }
 
+async function parseBackendError(
+  response: Response,
+  fallbackMessage: string,
+): Promise<ApiServiceError> {
+  const data = await parseJson<ApiErrorBody>(response).catch(
+    () => ({}) as ApiErrorBody,
+  );
+
+  const message =
+    typeof data.message === "string"
+      ? data.message
+      : Array.isArray(data.message)
+        ? data.message.join(" · ")
+        : data.error;
+
+  return new ApiServiceError(message ?? fallbackMessage, response.status);
+}
+
 /**
  * Cliente → backend NestJS (`POST {NEXT_PUBLIC_API_URL}/api/lotes/analyze`).
  *
  * Persiste el lote en Supabase (vía Prisma) y devuelve la fila completa,
  * incluido el `id` (UUID) y `areaHectareas` calculado con Turf en el server.
+ *
+ * Requiere sesión Supabase activa: el `access_token` se inyecta como
+ * `Authorization: Bearer …` para que el backend (cuando esté listo) pueda
+ * resolver el `userId` del JWT.
  */
 export async function analyzeLote(
   body: AnalyzeLoteRequestBody,
@@ -109,39 +205,21 @@ export async function analyzeLote(
     vertices: payload.poligonoGeoJSON.geometry.coordinates[0]?.length ?? 0,
   });
 
-  let response: Response;
-  try {
-    response = await fetch(ANALYZE_LOTE_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (cause) {
-    console.error("[analyzeLote] ✕ network error", cause);
-    throw new ApiServiceError(
-      "No se pudo contactar al backend de Terrascan.",
-      0,
-    );
-  }
-
-  const data = (await parseJson<LoteBackendResponse & ApiErrorBody>(
-    response,
-  ).catch(() => ({}) as LoteBackendResponse & ApiErrorBody));
+  const response = await authenticatedFetch(ANALYZE_LOTE_ENDPOINT, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
   if (!response.ok) {
-    const fallback =
-      typeof data.message === "string"
-        ? data.message
-        : Array.isArray(data.message)
-          ? data.message.join(" · ")
-          : data.error;
-
-    console.error("[analyzeLote] ✕ HTTP", response.status, fallback);
-    throw new ApiServiceError(
-      fallback ?? "No se pudo analizar el lote.",
-      response.status,
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo analizar el lote.",
     );
+    console.error("[analyzeLote] ✕ HTTP", apiError.status, apiError.message);
+    throw apiError;
   }
+
+  const data = await parseJson<LoteBackendResponse>(response);
 
   console.info("[analyzeLote] ← OK", {
     id: data.id,
@@ -151,6 +229,53 @@ export async function analyzeLote(
   });
 
   return data;
+}
+
+/**
+ * Cliente → backend NestJS (`GET {NEXT_PUBLIC_API_URL}/api/lotes`).
+ *
+ * Devuelve los lotes del usuario autenticado. Pensada para el listado "Mis lotes"
+ * que aparecerá cuando exista UI para gestionar lotes ya creados.
+ */
+export async function fetchLotes(): Promise<LoteListItem[]> {
+  const response = await authenticatedFetch(LIST_LOTES_ENDPOINT, {
+    method: "GET",
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudieron obtener los lotes.",
+    );
+    console.error("[fetchLotes] ✕ HTTP", apiError.status, apiError.message);
+    throw apiError;
+  }
+
+  return parseJson<LoteListItem[]>(response);
+}
+
+/**
+ * Cliente → backend NestJS (`GET {NEXT_PUBLIC_API_URL}/api/lotes/:id`).
+ */
+export async function fetchLoteById(id: string): Promise<LoteBackendResponse> {
+  const response = await authenticatedFetch(`${LIST_LOTES_ENDPOINT}/${id}`, {
+    method: "GET",
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo obtener el lote solicitado.",
+    );
+    console.error(
+      "[fetchLoteById] ✕ HTTP",
+      apiError.status,
+      apiError.message,
+    );
+    throw apiError;
+  }
+
+  return parseJson<LoteBackendResponse>(response);
 }
 
 /**
