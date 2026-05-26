@@ -64,6 +64,22 @@ export type MapHandle = {
   clearSearchMarker: () => void;
   showSavedPolygon: (feature: Feature<Polygon>) => void;
   clearSavedPolygon: () => void;
+  /**
+   * Acceso directo al `maplibregl.Map` interno. Usado por el hook de la
+   * varita mágica para `getCanvas()`, `unproject()` y el listener de click.
+   */
+  getInstance: () => maplibregl.Map | null;
+  /**
+   * Override del cursor del canvas. Pasar `null` restaura el cursor por
+   * defecto manejado por MapLibre.
+   */
+  setCursor: (cursor: string | null) => void;
+  /**
+   * Inserta un polígono pre-existente (e.g. detectado por IA) en MapboxDraw
+   * y dispara `onPolygonChange` como si lo hubiera dibujado el usuario.
+   * Sustituye cualquier polígono activo.
+   */
+  setPolygon: (feature: Feature<Polygon>) => void;
 };
 
 /**
@@ -301,6 +317,35 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     clearSavedPolygon: () => {
       clearSavedPolygonInternal();
     },
+    getInstance: () => mapRef.current,
+    setCursor: (cursor) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const canvas = map.getCanvas();
+      canvas.style.cursor = cursor ?? "";
+    },
+    setPolygon: (feature) => {
+      const draw = drawRef.current;
+      if (!draw) return;
+      lockedRef.current = false;
+      draw.deleteAll();
+      // Asignamos un id estable para poder identificar el feature dentro de
+      // Draw; sin id, `draw.add` genera uno aleatorio cada vez y dificulta
+      // operaciones posteriores.
+      const id = (feature.id as string | undefined) ?? `ai-${Date.now()}`;
+      draw.add({ ...feature, id });
+      // `direct_select` muestra cada vértice como un círculo arrastrable.
+      // Para polígonos auto-detectados por SAM, esto es lo que el usuario
+      // espera: ver los puntos clave y refinarlos manualmente sin tener que
+      // entrar al modo manualmente. `simple_select` deja el polígono como
+      // un bloque opaco sin handles.
+      draw.changeMode("direct_select", { featureId: id });
+      // `draw.add` no dispara `draw.create`; emitimos manualmente para que el
+      // workspace reciba el polígono y habilite "Confirmar lote".
+      emitPolygon(draw);
+      notifyCanCloseChange(false);
+      notifyDrawModeChange(false);
+    },
   }));
 
   useEffect(() => {
@@ -311,6 +356,10 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       style: SATELLITE_STYLE,
       center: PAMPAS_CENTER,
       zoom: DEFAULT_ZOOM,
+      // SlimSAM necesita leer el bitmap del canvas vía `RawImage.fromCanvas`.
+      // Sin `preserveDrawingBuffer`, WebGL descarta el contenido tras cada
+      // frame y obtenemos un canvas en negro al hacer la inferencia.
+      canvasContextAttributes: { preserveDrawingBuffer: true },
     });
 
     mapRef.current = map;

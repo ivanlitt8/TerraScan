@@ -4,6 +4,7 @@ import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import PanelLotesList from "@/components/PanelLotesList";
+import { useLoteVarita } from "@/hooks/useLoteVarita";
 import type { FlyToLocation } from "@/lib/locationSearch";
 import { buildMockHistoricalAnalysis } from "@/lib/mockLoteAnalysis";
 import { analyzeLote, ApiServiceError } from "@/services";
@@ -21,7 +22,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import type { Feature, Polygon } from "geojson";
-import { Layers, Loader2 } from "lucide-react";
+import { Layers, Loader2, Sparkles, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -58,6 +59,58 @@ export default function MapaWorkspace() {
     [resetAnalysis],
   );
 
+  const handleAiPolygonDetected = useCallback(
+    (feature: Feature<Polygon>) => {
+      // Inyectamos el polígono en MapboxDraw: dispara `onPolygonChange` y
+      // reusamos el mismo flujo de "Confirmar lote" que el dibujo manual.
+      mapRef.current?.setPolygon(feature);
+    },
+    [],
+  );
+
+  const getMapInstance = useCallback(
+    () => mapRef.current?.getInstance() ?? null,
+    [],
+  );
+
+  const setMapCursor = useCallback((cursor: string | null) => {
+    mapRef.current?.setCursor(cursor);
+  }, []);
+
+  const handleVaritaActivate = useCallback(() => {
+    // Al activar la varita borramos cualquier dibujo manual previo para
+    // que la inferencia parta de un mapa "limpio" y no haya doble polígono.
+    setConfirmed(false);
+    resetAnalysis();
+    mapRef.current?.clearPolygon();
+    mapRef.current?.clearSavedPolygon();
+  }, [resetAnalysis]);
+
+  const handleStartDrawing = useCallback(() => {
+    setConfirmed(false);
+    resetAnalysis();
+    mapRef.current?.unlockEditing();
+    mapRef.current?.clearPolygon();
+    requestAnimationFrame(() => {
+      mapRef.current?.startDrawing();
+    });
+  }, [resetAnalysis]);
+
+  const handleVaritaFallbackToManual = useCallback(() => {
+    // Cuando SAM no devuelve un contorno claro, asumimos que el lote es
+    // demasiado irregular o la imagen tiene poco contraste; dejamos al
+    // usuario directamente en modo de dibujo manual para no perder tiempo.
+    handleStartDrawing();
+  }, [handleStartDrawing]);
+
+  const varita = useLoteVarita({
+    getMap: getMapInstance,
+    setCursor: setMapCursor,
+    onPolygonDetected: handleAiPolygonDetected,
+    onActivate: handleVaritaActivate,
+    onFallbackToManual: handleVaritaFallbackToManual,
+  });
+
   const handleGoTo = useCallback((location: FlyToLocation) => {
     mapRef.current?.flyTo({
       lng: location.lng,
@@ -66,16 +119,6 @@ export default function MapaWorkspace() {
       label: location.label,
     });
   }, []);
-
-  const handleStartDrawing = () => {
-    setConfirmed(false);
-    resetAnalysis();
-    mapRef.current?.unlockEditing();
-    mapRef.current?.clearPolygon();
-    requestAnimationFrame(() => {
-      mapRef.current?.startDrawing();
-    });
-  };
 
   const handleCloseContour = () => {
     mapRef.current?.closePolygon();
@@ -238,19 +281,182 @@ export default function MapaWorkspace() {
               top="4"
               className="pointer-events-auto z-20"
             >
-              <Tooltip content="Mis lotes" side="right">
-                <IconButton
-                  type="button"
-                  size="3"
-                  radius="full"
-                  variant="solid"
-                  color="jade"
-                  aria-label="Abrir panel de mis lotes"
-                  onClick={() => setIsLotesPanelOpen(true)}
+              <Flex direction="column" gap="2">
+                <Tooltip content="Mis lotes" side="right">
+                  <IconButton
+                    type="button"
+                    size="3"
+                    radius="full"
+                    variant="solid"
+                    color="jade"
+                    aria-label="Abrir panel de mis lotes"
+                    onClick={() => setIsLotesPanelOpen(true)}
+                  >
+                    <Layers size={18} aria-hidden />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip
+                  content={
+                    varita.phase === "loading-model"
+                      ? "Descargando modelo de IA…"
+                      : varita.isActive
+                        ? "Hacé clic y arrastrá para encerrar el lote"
+                        : "Detectar lote con IA (clic + arrastrar)"
+                  }
+                  side="right"
                 >
-                  <Layers size={18} aria-hidden />
-                </IconButton>
-              </Tooltip>
+                  <IconButton
+                    type="button"
+                    size="3"
+                    radius="full"
+                    variant={varita.isActive ? "soft" : "solid"}
+                    color={varita.isActive ? "amber" : "iris"}
+                    aria-label={
+                      varita.isActive
+                        ? "Desactivar detección automática"
+                        : "Activar detección automática de lote"
+                    }
+                    aria-pressed={varita.isActive}
+                    disabled={
+                      varita.phase === "loading-model" ||
+                      varita.phase === "detecting" ||
+                      isAnalyzing
+                    }
+                    onClick={() => {
+                      if (varita.isActive) {
+                        varita.deactivate();
+                      } else {
+                        void varita.activate();
+                      }
+                    }}
+                  >
+                    {varita.phase === "loading-model" ||
+                    varita.phase === "detecting" ? (
+                      <Loader2 size={18} className="animate-spin" aria-hidden />
+                    ) : varita.isActive ? (
+                      <X size={18} aria-hidden />
+                    ) : (
+                      <Sparkles size={18} aria-hidden />
+                    )}
+                  </IconButton>
+                </Tooltip>
+              </Flex>
+            </Box>
+          )}
+
+          {(varita.phase === "loading-model" ||
+            varita.phase === "active" ||
+            varita.phase === "dragging" ||
+            varita.phase === "detecting") && (
+            <Box
+              position="absolute"
+              top="4"
+              left="50%"
+              className="z-20 pointer-events-none -translate-x-1/2"
+              style={{ maxWidth: "26rem", width: "calc(100% - 2rem)" }}
+            >
+              <Callout.Root
+                size="1"
+                color={
+                  varita.phase === "loading-model"
+                    ? "iris"
+                    : varita.phase === "detecting"
+                      ? "jade"
+                      : "amber"
+                }
+              >
+                <Callout.Icon>
+                  {varita.phase === "active" || varita.phase === "dragging" ? (
+                    <Sparkles size={14} aria-hidden />
+                  ) : (
+                    <Loader2 size={14} className="animate-spin" aria-hidden />
+                  )}
+                </Callout.Icon>
+                <Callout.Text>
+                  {varita.phase === "loading-model"
+                    ? "Descargando modelo SlimSAM (sólo la primera vez)…"
+                    : varita.phase === "detecting"
+                      ? "Detectando el contorno del lote…"
+                      : varita.phase === "dragging"
+                        ? "Soltá el mouse para detectar el lote dentro del rectángulo."
+                        : "Hacé clic y arrastrá para encerrar el lote. Luego ajustá los puntos clave del polígono si es necesario."}
+                </Callout.Text>
+              </Callout.Root>
+            </Box>
+          )}
+
+          {/*
+            Overlay del bounding box durante el drag. Vive como un <div>
+            absoluto encima del canvas del mapa para mantener feedback a
+            60fps sin tener que re-renderizar el mapa entero como source
+            GeoJSON. `pointerEvents: none` para que el rect no robe los
+            eventos de mousemove/mouseup que el hook necesita.
+          */}
+          {varita.dragBox && (
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                left: varita.dragBox.x,
+                top: varita.dragBox.y,
+                width: varita.dragBox.width,
+                height: varita.dragBox.height,
+                border: "2px dashed var(--amber-9)",
+                background: "color-mix(in srgb, var(--amber-9) 12%, transparent)",
+                pointerEvents: "none",
+                zIndex: 15,
+                boxShadow: "0 0 0 1px rgba(0,0,0,0.18)",
+              }}
+            />
+          )}
+
+          {varita.errorMessage && (
+            <Box
+              position="absolute"
+              top="4"
+              left="50%"
+              className="z-20 pointer-events-auto -translate-x-1/2"
+              style={{ maxWidth: "26rem", width: "calc(100% - 2rem)" }}
+            >
+              <Callout.Root size="1" color="red" role="alert">
+                <Callout.Icon>
+                  <Sparkles size={14} aria-hidden />
+                </Callout.Icon>
+                <Callout.Text>{varita.errorMessage}</Callout.Text>
+                <Flex gap="2" mt="2" wrap="wrap">
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="gray"
+                    onClick={varita.clearError}
+                  >
+                    Cerrar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="solid"
+                    color="iris"
+                    onClick={() => void varita.activate()}
+                  >
+                    Reintentar
+                  </Button>
+                  <Button
+                    type="button"
+                    size="1"
+                    variant="soft"
+                    color="jade"
+                    onClick={() => {
+                      varita.clearError();
+                      handleStartDrawing();
+                    }}
+                  >
+                    Dibujar a mano
+                  </Button>
+                </Flex>
+              </Callout.Root>
             </Box>
           )}
         </Box>

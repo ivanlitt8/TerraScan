@@ -9,11 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@mapbox/mapbox-gl-draw": "^1.5.1",
     "@radix-ui/themes": "^3.3.0",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.1",
+    "@turf/helpers": "^7.3.5",
+    "@turf/simplify": "^7.3.5",
     "@types/mapbox__mapbox-gl-draw": "^1.4.9",
+    "d3-contour": "^4.0.2",
     "framer-motion": "^12.40.0",
     "lucide-react": "^1.16.0",
     "maplibre-gl": "^5.24.0",
@@ -24,6 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/d3-contour": "^3.0.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
