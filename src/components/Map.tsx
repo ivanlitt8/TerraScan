@@ -116,6 +116,13 @@ export type MapProps = {
   onPolygonChange?: (feature: Feature<Polygon> | null) => void;
   onDrawModeChange?: (isDrawing: boolean) => void;
   onCanCloseChange?: (canClose: boolean) => void;
+  /**
+   * Se invoca una vez que el `style` cargó y todas las fuentes auxiliares
+   * (search marker, polígono guardado, Draw) están instaladas. Para hooks
+   * externos (e.g. `useNDVILayer`) que necesitan agregar/quitar capas con
+   * la garantía de que `map.addSource` no va a tirar.
+   */
+  onMapReady?: (map: maplibregl.Map) => void;
 };
 
 function getActivePolygon(draw: MapboxDraw): Feature<Polygon> | null {
@@ -165,7 +172,7 @@ function enforceSinglePolygon(draw: MapboxDraw): void {
 }
 
 const Map = forwardRef<MapHandle, MapProps>(function Map(
-  { className, onPolygonChange, onDrawModeChange, onCanCloseChange },
+  { className, onPolygonChange, onDrawModeChange, onCanCloseChange, onMapReady },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -186,6 +193,10 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
 
   const notifyCanCloseChange = useEffectEvent((canClose: boolean) => {
     onCanCloseChange?.(canClose);
+  });
+
+  const notifyMapReady = useEffectEvent((instance: maplibregl.Map) => {
+    onMapReady?.(instance);
   });
 
   const syncCanClose = useCallback((draw: MapboxDraw) => {
@@ -503,6 +514,7 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       setupSearchMarker();
       setupSavedPolygonLayer();
       teardownDraw = setupDraw();
+      notifyMapReady(map);
     };
 
     if (map.loaded()) {

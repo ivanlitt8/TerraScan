@@ -15,7 +15,7 @@ import { createClient as createSupabaseBrowserClient } from "@/utils/supabase/cl
 const NOMINATIM_BASE_URL = "https://nominatim.openstreetmap.org/search";
 const NOMINATIM_USER_AGENT = "TerrascanMVP/1.0 (geocode; desarrollo local)";
 
-const BACKEND_BASE_URL =
+export const BACKEND_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ANALYZE_LOTE_ENDPOINT = `${BACKEND_BASE_URL}/api/lotes/analyze`;
 const LIST_LOTES_ENDPOINT = `${BACKEND_BASE_URL}/api/lotes`;
@@ -89,7 +89,7 @@ async function getSupabaseAccessToken(): Promise<string> {
  * - Si recibe `401` del backend, lo propaga como `ApiServiceError` con el
  *   mismo status para que la UI pueda redirigir al login.
  */
-async function authenticatedFetch(
+export async function authenticatedFetch(
   url: string,
   init: RequestInit = {},
 ): Promise<Response> {
@@ -164,7 +164,7 @@ function sanitizePoligonoGeoJSON(
   };
 }
 
-async function parseBackendError(
+export async function parseBackendError(
   response: Response,
   fallbackMessage: string,
 ): Promise<ApiServiceError> {

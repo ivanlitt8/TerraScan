@@ -1,10 +1,15 @@
 "use client";
 
-import DashboardLote from "@/components/DashboardLote";
+import DashboardLote, {
+  type NDVIToggleState,
+} from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import PanelLotesList from "@/components/PanelLotesList";
+import { useIncendios } from "@/hooks/useIncendios";
 import { useLoteVarita } from "@/hooks/useLoteVarita";
+import { useNDVILayer } from "@/hooks/useNDVILayer";
+import { clusterizarDetecciones } from "@/lib/incendiosClustering";
 import type { FlyToLocation } from "@/lib/locationSearch";
 import { buildMockHistoricalAnalysis } from "@/lib/mockLoteAnalysis";
 import { analyzeLote, ApiServiceError } from "@/services";
@@ -23,12 +28,23 @@ import {
 } from "@radix-ui/themes";
 import type { Feature, Polygon } from "geojson";
 import { Layers, Loader2, Sparkles, X } from "lucide-react";
+import type maplibregl from "maplibre-gl";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+/**
+ * `id` de la capa decorativa (contorno emerald) del polígono guardado en
+ * `Map.tsx`. El hook `useNDVILayer` lo recibe en `beforeLayerId` para
+ * insertar el NDVI **debajo** del contorno y que éste siga siendo visible.
+ *
+ * Mantener sincronizado con `SAVED_POLYGON_SOURCE + '-fill'` en Map.tsx.
+ */
+const SAVED_POLYGON_FILL_LAYER_ID = "terrascan-saved-polygon-fill";
 
 export default function MapaWorkspace() {
   const router = useRouter();
   const mapRef = useRef<MapHandle>(null);
+  const [mapInstance, setMapInstance] = useState<maplibregl.Map | null>(null);
   const [polygon, setPolygon] = useState<Feature<Polygon> | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -37,14 +53,22 @@ export default function MapaWorkspace() {
   const [analysis, setAnalysis] = useState<LoteAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isLotesPanelOpen, setIsLotesPanelOpen] = useState(false);
+  const [ndviEnabled, setNdviEnabled] = useState(false);
 
   const panelOpen = Boolean(analysis);
   const showMapToolbar = !panelOpen && !isAnalyzing;
+
+  const handleMapReady = useCallback((instance: maplibregl.Map) => {
+    setMapInstance(instance);
+  }, []);
 
   const resetAnalysis = useCallback(() => {
     setAnalysis(null);
     setAnalysisError(null);
     setIsAnalyzing(false);
+    // Al limpiar el análisis también apagamos el overlay NDVI: si el usuario
+    // dibuja un lote nuevo no queremos mostrar la salud del lote viejo.
+    setNdviEnabled(false);
   }, []);
 
   const handlePolygonChange = useCallback(
@@ -110,6 +134,71 @@ export default function MapaWorkspace() {
     onActivate: handleVaritaActivate,
     onFallbackToManual: handleVaritaFallbackToManual,
   });
+
+  // Capa NDVI: sólo se enciende cuando hay análisis confirmado, polígono
+  // disponible y el usuario lo pidió explícitamente con el toggle del panel.
+  // El hook ya gestiona ABort/cleanup, así que no necesitamos `useEffect`
+  // adicional acá.
+  const ndviLayer = useNDVILayer({
+    map: mapInstance,
+    loteId: analysis?.id ?? null,
+    polygon,
+    enabled: ndviEnabled && Boolean(analysis) && Boolean(polygon),
+    opacity: 0.7,
+    beforeLayerId: SAVED_POLYGON_FILL_LAYER_ID,
+  });
+
+  // Incendios FIRMS reales (NASA VIIRS · SNPP + NOAA-20). El hook dispara
+  // `GET /api/lotes/:id/incendios` cuando se confirma un lote y mantiene
+  // estado interno; acá lo consumimos sólo en su forma deduplicada para
+  // pasársela al `DashboardLote` y reemplazar el mock de "Alertas críticas".
+  const incendios = useIncendios({ loteId: analysis?.id ?? null });
+
+  // Clusterizamos las detecciones crudas (los dos satélites suelen ver
+  // el mismo foco con minutos de diferencia → duplicados). El hook ya
+  // ordena por fecha, pero el clustering vive en `@/lib` porque es
+  // lógica pura (sin React) reutilizable desde tests o un futuro panel
+  // expandido del evento. Memo para evitar re-clusterizar en cada render.
+  const incendiosClusters = useMemo(
+    () => (incendios.data ? clusterizarDetecciones(incendios.data) : null),
+    [incendios.data],
+  );
+
+  const handleToggleNDVI = useCallback(() => {
+    setNdviEnabled((prev) => !prev);
+  }, []);
+
+  // Mapeamos la fase rica del hook a la forma simplificada que consume el
+  // panel; `DashboardLote` solo necesita distinguir loading/error/ok para
+  // el bot\u00f3n y el callout, no le importa el `isAuthError` interno.
+  const ndviStatus = useMemo<NDVIToggleState>(() => {
+    switch (ndviLayer.status.phase) {
+      case "loading":
+        return { phase: "loading" };
+      case "ready":
+        return { phase: "ready" };
+      case "error":
+        return { phase: "error", message: ndviLayer.status.message };
+      default:
+        return { phase: "idle" };
+    }
+  }, [ndviLayer.status]);
+
+  // Si el backend devuelve 401 mientras pedimos el NDVI, propagamos al
+  // mismo redirect que usa el resto del workspace para no dejar al usuario
+  // con un panel a medio cargar.
+  useEffect(() => {
+    if (
+      ndviLayer.status.phase === "error" &&
+      ndviLayer.status.isAuthError
+    ) {
+      const search = new URLSearchParams({
+        tab: "login",
+        error: "Tu sesión expiró. Iniciá sesión nuevamente.",
+      });
+      router.replace(`/?${search.toString()}`);
+    }
+  }, [ndviLayer.status, router]);
 
   const handleGoTo = useCallback((location: FlyToLocation) => {
     mapRef.current?.flyTo({
@@ -265,6 +354,7 @@ export default function MapaWorkspace() {
             onPolygonChange={handlePolygonChange}
             onDrawModeChange={setIsDrawing}
             onCanCloseChange={setCanClose}
+            onMapReady={handleMapReady}
           />
 
           <PanelLotesList
@@ -570,7 +660,16 @@ export default function MapaWorkspace() {
           style={{ minHeight: 0, minWidth: 0, borderTop: "1px solid var(--gray-a6)" }}
           className="lg:border-t-0 lg:border-l"
         >
-          <DashboardLote data={analysis} onClear={handleClearLote} />
+          <DashboardLote
+            data={analysis}
+            onClear={handleClearLote}
+            ndviEnabled={ndviEnabled}
+            ndviStatus={ndviStatus}
+            onToggleNDVI={polygon ? handleToggleNDVI : undefined}
+            ndviStats={ndviLayer.stats}
+            realHealthScore={ndviLayer.healthScore}
+            incendiosReales={incendiosClusters}
+          />
         </Box>
       )}
     </Grid>
