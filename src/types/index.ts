@@ -4,6 +4,4 @@ export type {
   AnalyzeLoteRequestBody,
   LoteAnalysisResult,
   LoteBackendResponse,
-  NdviCampania,
-  NdviEstado,
 } from "./loteAnalysis";

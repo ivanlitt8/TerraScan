@@ -279,6 +279,64 @@ export async function fetchLoteById(id: string): Promise<LoteBackendResponse> {
 }
 
 /**
+ * Cliente → backend NestJS (`PATCH {NEXT_PUBLIC_API_URL}/api/lotes/:id`).
+ *
+ * Renombra un lote. Devuelve la fila actualizada para que el frontend pueda
+ * refrescar su estado en el acto sin re-pedir el detalle.
+ */
+export async function renameLote(
+  id: string,
+  nombre: string,
+): Promise<LoteBackendResponse> {
+  console.info("[renameLote] → PATCH", `${LIST_LOTES_ENDPOINT}/${id}`, {
+    nombre,
+  });
+
+  const response = await authenticatedFetch(`${LIST_LOTES_ENDPOINT}/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ nombre }),
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo renombrar el lote.",
+    );
+    console.error("[renameLote] ✕ HTTP", apiError.status, apiError.message);
+    throw apiError;
+  }
+
+  const data = await parseJson<LoteBackendResponse>(response);
+  console.info("[renameLote] ← OK", { id: data.id, nombre: data.nombre });
+  return data;
+}
+
+/**
+ * Cliente → backend NestJS (`DELETE {NEXT_PUBLIC_API_URL}/api/lotes/:id`).
+ *
+ * Elimina el lote y, en cascada, su análisis GEE. El backend responde
+ * `204 No Content`, así que no parseamos body.
+ */
+export async function deleteLote(id: string): Promise<void> {
+  console.info("[deleteLote] → DELETE", `${LIST_LOTES_ENDPOINT}/${id}`);
+
+  const response = await authenticatedFetch(`${LIST_LOTES_ENDPOINT}/${id}`, {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo eliminar el lote.",
+    );
+    console.error("[deleteLote] ✕ HTTP", apiError.status, apiError.message);
+    throw apiError;
+  }
+
+  console.info("[deleteLote] ← OK", { id });
+}
+
+/**
  * Servidor → Nominatim (OpenStreetMap).
  * Usar desde app/api/.../route.ts u otras rutas del servidor.
  */

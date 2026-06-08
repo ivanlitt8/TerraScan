@@ -337,6 +337,58 @@ export async function getSaludAnalisis(
   };
 }
 
+/** Cuerpo JSON de `GET /api/lotes/:id/salud-stats`. */
+interface SaludStatsBackendResponse {
+  stats: NDVIStatPoint[];
+}
+
+/**
+ * `GET /api/lotes/:id/salud-stats` → solo la serie temporal NDVI.
+ *
+ * Endpoint liviano (no genera PNG ni score) que alimenta el selector de
+ * período del gráfico del dashboard. El score y la capa de mapa siguen
+ * usando `getSaludAnalisis` (ventana de 30 días); esta llamada permite
+ * estirar el gráfico a 3/6/12 meses sin re-descargar el raster.
+ *
+ * Devuelve los puntos ordenados cronológicamente (igual que el backend).
+ * Mismos errores que `getSaludAnalisis` (401, 502, 504, 0).
+ */
+export async function getSaludStats(
+  params: GetSaludNDVIParams,
+): Promise<NDVIStatPoint[]> {
+  const { loteId, from, to, signal } = params;
+
+  const url = new URL(`${BACKEND_BASE_URL}/api/lotes/${loteId}/salud-stats`);
+  if (from) url.searchParams.set("from", from);
+  if (to) url.searchParams.set("to", to);
+
+  console.info("[getSaludStats] → GET", url.toString());
+
+  const response = await authenticatedFetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo cargar la serie NDVI del lote.",
+    );
+    console.error("[getSaludStats] ✕ HTTP", apiError.status, apiError.message);
+    throw apiError;
+  }
+
+  const body = (await response.json()) as SaludStatsBackendResponse;
+
+  console.info("[getSaludStats] ← OK", {
+    loteId,
+    stats: body.stats.length,
+  });
+
+  return body.stats;
+}
+
 /**
  * Libera el `ObjectURL` creado por `getSaludNDVI`. Es un wrapper trivial
  * sobre `URL.revokeObjectURL` pero queda exportado para que los consumidores

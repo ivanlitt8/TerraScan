@@ -1,15 +1,18 @@
 export {
   analyzeLote,
   ApiServiceError,
+  deleteLote,
   fetchLoteById,
   fetchLotes,
   fetchNominatimGeocode,
+  renameLote,
   searchLocation,
 } from "./apiService";
 
 export {
   getSaludAnalisis,
   getSaludNDVI,
+  getSaludStats,
   revokeNDVIObjectURL,
   type GetSaludNDVIParams,
   type HealthScoreCategoria,
@@ -25,3 +28,11 @@ export {
   type FetchIncendiosOptions,
   type IncendioResponse,
 } from "./incendiosService";
+
+export {
+  fetchAnalisisEspacial,
+  type AnalisisEspacialResponse,
+  type FetchAnalisisEspacialOptions,
+  type FloodEvent,
+  type FuenteAnalizada,
+} from "./analisisService";

@@ -1,18 +1,21 @@
 "use client";
 
-import DashboardLote, {
-  type NDVIToggleState,
-} from "@/components/DashboardLote";
+import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import PanelLotesList from "@/components/PanelLotesList";
+import { useAnalisisEspacial } from "@/hooks/useAnalisisEspacial";
 import { useIncendios } from "@/hooks/useIncendios";
 import { useLoteVarita } from "@/hooks/useLoteVarita";
 import { useNDVILayer } from "@/hooks/useNDVILayer";
+import {
+  NDVI_DEFAULT_PERIOD,
+  useNDVISerie,
+  type NDVIPeriodId,
+} from "@/hooks/useNDVISerie";
 import { clusterizarDetecciones } from "@/lib/incendiosClustering";
 import type { FlyToLocation } from "@/lib/locationSearch";
-import { buildMockHistoricalAnalysis } from "@/lib/mockLoteAnalysis";
-import { analyzeLote, ApiServiceError } from "@/services";
+import { analyzeLote, ApiServiceError, deleteLote, renameLote } from "@/services";
 import type {
   LoteAnalysisResult,
   LoteBackendResponse,
@@ -40,6 +43,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  * Mantener sincronizado con `SAVED_POLYGON_SOURCE + '-fill'` en Map.tsx.
  */
 const SAVED_POLYGON_FILL_LAYER_ID = "terrascan-saved-polygon-fill";
+const SAVED_POLYGON_LINE_LAYER_ID = "terrascan-saved-polygon-line";
 
 export default function MapaWorkspace() {
   const router = useRouter();
@@ -54,6 +58,17 @@ export default function MapaWorkspace() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isLotesPanelOpen, setIsLotesPanelOpen] = useState(false);
   const [ndviEnabled, setNdviEnabled] = useState(false);
+  // Período del gráfico NDVI (solo afecta al gráfico; el score y la capa
+  // siguen usando la ventana "actual" de 30 días).
+  const [ndviPeriod, setNdviPeriod] = useState<NDVIPeriodId>(
+    NDVI_DEFAULT_PERIOD,
+  );
+  // Lote guardado actualmente seleccionado (con su geometría), para poder
+  // re-seleccionarlo al hacer clic sobre su polígono en el mapa.
+  const selectedLoteRef = useRef<LoteBackendResponse | null>(null);
+  // Id del lote activo en el panel: distingue "re-clic del mismo lote"
+  // (sólo re-encuadra) de "lote distinto" (resetea overlays NDVI).
+  const currentLoteIdRef = useRef<string | null>(null);
 
   const panelOpen = Boolean(analysis);
   const showMapToolbar = !panelOpen && !isAnalyzing;
@@ -69,6 +84,43 @@ export default function MapaWorkspace() {
     // Al limpiar el análisis también apagamos el overlay NDVI: si el usuario
     // dibuja un lote nuevo no queremos mostrar la salud del lote viejo.
     setNdviEnabled(false);
+    // Reseteamos el período del gráfico a la ventana actual para el próximo lote.
+    setNdviPeriod(NDVI_DEFAULT_PERIOD);
+    selectedLoteRef.current = null;
+    currentLoteIdRef.current = null;
+  }, []);
+
+  /**
+   * Selecciona un lote guardado: pinta su polígono, encuadra la cámara y, lo
+   * más importante, setea el estado compartido (`analysis` + `polygon`) que
+   * abre el `DashboardLote` y dispara los hooks de datos (NDVI, incendios,
+   * GEE). Es el punto único de selección, lo usan tanto el panel de "Mis
+   * lotes" como el clic sobre el polígono en el mapa.
+   */
+  const handleSelectLote = useCallback((lote: LoteBackendResponse) => {
+    const isSameLote = currentLoteIdRef.current === lote.id;
+    currentLoteIdRef.current = lote.id;
+    selectedLoteRef.current = lote;
+
+    setIsLotesPanelOpen(false);
+    mapRef.current?.clearPolygon();
+    mapRef.current?.showSavedPolygon(lote.poligonoGeoJSON);
+
+    setAnalysisError(null);
+    setConfirmed(true);
+    setPolygon(lote.poligonoGeoJSON);
+    // Sólo reseteamos overlays/serie cuando cambia el lote: re-clickear el
+    // mismo polígono no debe apagar la capa NDVI ni el período del gráfico.
+    if (!isSameLote) {
+      setNdviEnabled(false);
+      setNdviPeriod(NDVI_DEFAULT_PERIOD);
+    }
+    setAnalysis({
+      id: lote.id,
+      nombre: lote.nombre,
+      hectareas: lote.areaHectareas,
+      procesadoEn: lote.createdAt,
+    });
   }, []);
 
   const handlePolygonChange = useCallback(
@@ -135,17 +187,28 @@ export default function MapaWorkspace() {
     onFallbackToManual: handleVaritaFallbackToManual,
   });
 
-  // Capa NDVI: sólo se enciende cuando hay análisis confirmado, polígono
-  // disponible y el usuario lo pidió explícitamente con el toggle del panel.
-  // El hook ya gestiona ABort/cleanup, así que no necesitamos `useEffect`
-  // adicional acá.
+  // NDVI: el hook hace dos cosas desacopladas.
+  //  1. Datos (serie + score): se piden apenas hay lote confirmado + polígono,
+  //     sin importar el toggle → el gráfico y el score cargan solos.
+  //  2. Capa raster: se dibuja sólo si `layerEnabled` (toggle del panel).
+  // Apagar la capa NO borra los datos numéricos del panel.
   const ndviLayer = useNDVILayer({
     map: mapInstance,
     loteId: analysis?.id ?? null,
     polygon,
-    enabled: ndviEnabled && Boolean(analysis) && Boolean(polygon),
+    layerEnabled: ndviEnabled,
     opacity: 0.7,
     beforeLayerId: SAVED_POLYGON_FILL_LAYER_ID,
+  });
+
+  // Serie del gráfico NDVI. Para el período default (30 días) reusa la serie
+  // que ya trajo `useNDVILayer` (cero llamadas extra); para 3/6/12 meses pide
+  // `salud-stats` sin tocar el score ni la capa.
+  const ndviSerie = useNDVISerie({
+    loteId: analysis?.id ?? null,
+    period: ndviPeriod,
+    baseSerie: ndviLayer.stats,
+    baseStatus: ndviLayer.dataStatus.phase,
   });
 
   // Incendios FIRMS reales (NASA VIIRS · SNPP + NOAA-20). El hook dispara
@@ -164,33 +227,23 @@ export default function MapaWorkspace() {
     [incendios.data],
   );
 
+  // Análisis espacial GEE (elevación SRTM + inundaciones GFD). El hook
+  // dispara `GET /api/gee/analisis/:loteId` al confirmar un lote. Pasamos los
+  // eventos de inundación reales al `DashboardLote` para reemplazar el mock;
+  // mientras carga/falla (`data` null) cae al mock automáticamente.
+  const analisis = useAnalisisEspacial({ loteId: analysis?.id ?? null });
+
   const handleToggleNDVI = useCallback(() => {
     setNdviEnabled((prev) => !prev);
   }, []);
 
-  // Mapeamos la fase rica del hook a la forma simplificada que consume el
-  // panel; `DashboardLote` solo necesita distinguir loading/error/ok para
-  // el bot\u00f3n y el callout, no le importa el `isAuthError` interno.
-  const ndviStatus = useMemo<NDVIToggleState>(() => {
-    switch (ndviLayer.status.phase) {
-      case "loading":
-        return { phase: "loading" };
-      case "ready":
-        return { phase: "ready" };
-      case "error":
-        return { phase: "error", message: ndviLayer.status.message };
-      default:
-        return { phase: "idle" };
-    }
-  }, [ndviLayer.status]);
-
-  // Si el backend devuelve 401 mientras pedimos el NDVI, propagamos al
+  // Si el backend devuelve 401 mientras pedimos los datos NDVI, propagamos al
   // mismo redirect que usa el resto del workspace para no dejar al usuario
   // con un panel a medio cargar.
   useEffect(() => {
     if (
-      ndviLayer.status.phase === "error" &&
-      ndviLayer.status.isAuthError
+      ndviLayer.dataStatus.phase === "error" &&
+      ndviLayer.dataStatus.isAuthError
     ) {
       const search = new URLSearchParams({
         tab: "login",
@@ -198,7 +251,7 @@ export default function MapaWorkspace() {
       });
       router.replace(`/?${search.toString()}`);
     }
-  }, [ndviLayer.status, router]);
+  }, [ndviLayer.dataStatus, router]);
 
   const handleGoTo = useCallback((location: FlyToLocation) => {
     mapRef.current?.flyTo({
@@ -237,16 +290,14 @@ export default function MapaWorkspace() {
     try {
       const lote = await analyzeLote({ nombre, poligonoGeoJSON: polygon });
 
-      // Combinamos los campos REALES del backend (id de Supabase, hectáreas
-      // calculadas con Turf, createdAt) con el mock histórico (NDVI + alertas)
-      // que el backend todavía no calcula — ver pendientes en back/HISTORIAL.md.
-      const historico = buildMockHistoricalAnalysis();
+      // Sólo guardamos la identidad real del lote (Supabase + Turf). Las
+      // métricas (NDVI, score, incendios, inundaciones) las resuelven los
+      // hooks dedicados contra sus endpoints reales — sin mocks intermedios.
       setAnalysis({
         id: lote.id,
         nombre: lote.nombre,
         hectareas: lote.areaHectareas,
         procesadoEn: lote.createdAt,
-        ...historico,
       });
     } catch (error) {
       if (error instanceof ApiServiceError && error.status === 401) {
@@ -285,10 +336,107 @@ export default function MapaWorkspace() {
     router.replace(`/?${search.toString()}`);
   }, [router]);
 
-  const handleLoteFromPanel = useCallback((lote: LoteBackendResponse) => {
-    mapRef.current?.clearPolygon();
-    mapRef.current?.showSavedPolygon(lote.poligonoGeoJSON);
-  }, []);
+  const handleRefreshAnalysis = useCallback(() => {
+    analisis.refresh({ force: true });
+  }, [analisis]);
+
+  const redirectToLogin = useCallback(
+    (message: string) => {
+      const search = new URLSearchParams({ tab: "login", error: message });
+      router.replace(`/?${search.toString()}`);
+    },
+    [router],
+  );
+
+  /**
+   * Renombra el lote en el backend y refleja el nuevo nombre en el estado
+   * sin perder el análisis actual (NDVI, incendios, GEE siguen montados).
+   * Rechaza el error hacia el panel para que muestre feedback inline.
+   */
+  const handleRenameLote = useCallback(
+    async (loteId: string, nuevoNombre: string) => {
+      try {
+        const updated = await renameLote(loteId, nuevoNombre);
+        setAnalysis((prev) =>
+          prev && prev.id === loteId
+            ? { ...prev, nombre: updated.nombre }
+            : prev,
+        );
+        if (selectedLoteRef.current?.id === loteId) {
+          selectedLoteRef.current = {
+            ...selectedLoteRef.current,
+            nombre: updated.nombre,
+          };
+        }
+      } catch (error) {
+        if (error instanceof ApiServiceError && error.status === 401) {
+          redirectToLogin("Tu sesión expiró. Iniciá sesión nuevamente.");
+          return;
+        }
+        throw error;
+      }
+    },
+    [redirectToLogin],
+  );
+
+  /**
+   * Elimina el lote (y en cascada su análisis GEE) en el backend. La limpieza
+   * del panel/mapa la dispara el propio `DashboardLote` vía `onClear` cuando
+   * esta promesa resuelve, para mantener el orquestado de UI en un solo lugar.
+   */
+  const handleDeleteLote = useCallback(
+    async (loteId: string) => {
+      try {
+        await deleteLote(loteId);
+      } catch (error) {
+        if (error instanceof ApiServiceError && error.status === 401) {
+          redirectToLogin("Tu sesión expiró. Iniciá sesión nuevamente.");
+          return;
+        }
+        throw error;
+      }
+    },
+    [redirectToLogin],
+  );
+
+  // Clic sobre el polígono guardado en el mapa → re-selecciona el lote (abre
+  // el panel si estuviera cerrado). Cursor "pointer" al pasar por encima para
+  // señalizar que es interactivo.
+  useEffect(() => {
+    const map = mapInstance;
+    if (!map) return;
+
+    const onClick = () => {
+      const lote = selectedLoteRef.current;
+      if (lote) handleSelectLote(lote);
+    };
+    const setPointer = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    const clearPointer = () => {
+      map.getCanvas().style.cursor = "";
+    };
+
+    for (const layerId of [
+      SAVED_POLYGON_FILL_LAYER_ID,
+      SAVED_POLYGON_LINE_LAYER_ID,
+    ]) {
+      map.on("click", layerId, onClick);
+      map.on("mouseenter", layerId, setPointer);
+      map.on("mouseleave", layerId, clearPointer);
+    }
+
+    return () => {
+      for (const layerId of [
+        SAVED_POLYGON_FILL_LAYER_ID,
+        SAVED_POLYGON_LINE_LAYER_ID,
+      ]) {
+        map.off("click", layerId, onClick);
+        map.off("mouseenter", layerId, setPointer);
+        map.off("mouseleave", layerId, clearPointer);
+      }
+    };
+  }, [mapInstance, handleSelectLote]);
 
   useEffect(() => {
     if (!panelOpen) return;
@@ -360,7 +508,7 @@ export default function MapaWorkspace() {
           <PanelLotesList
             isOpen={isLotesPanelOpen}
             onClose={() => setIsLotesPanelOpen(false)}
-            onLoteSelect={handleLoteFromPanel}
+            onLoteSelect={handleSelectLote}
             onAuthError={handleAuthError}
           />
 
@@ -663,12 +811,26 @@ export default function MapaWorkspace() {
           <DashboardLote
             data={analysis}
             onClear={handleClearLote}
-            ndviEnabled={ndviEnabled}
-            ndviStatus={ndviStatus}
-            onToggleNDVI={polygon ? handleToggleNDVI : undefined}
-            ndviStats={ndviLayer.stats}
+            ndviDataStatus={ndviLayer.dataStatus.phase}
             realHealthScore={ndviLayer.healthScore}
+            ndviSerie={ndviSerie.serie}
+            ndviSerieStatus={ndviSerie.status}
+            ndviPeriod={ndviPeriod}
+            onNdviPeriodChange={setNdviPeriod}
+            onToggleLayer={polygon ? handleToggleNDVI : undefined}
+            layerVisible={ndviEnabled}
+            incendiosStatus={incendios.status.phase}
             incendiosReales={incendiosClusters}
+            inundacionesStatus={analisis.status.phase}
+            inundacionesReales={analisis.data?.inundaciones ?? null}
+            elevacion={analisis.data?.elevacion ?? null}
+            analisisCacheado={analisis.data?.cacheado ?? null}
+            analisisActualizadoEn={analisis.data?.actualizadoEn ?? null}
+            analisisRefreshing={analisis.isRefreshing}
+            onRefreshAnalysis={handleRefreshAnalysis}
+            loteGuardado
+            onRenameLote={handleRenameLote}
+            onDeleteLote={handleDeleteLote}
           />
         </Box>
       )}

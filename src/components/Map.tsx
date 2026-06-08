@@ -19,6 +19,9 @@ import {
 const PAMPAS_CENTER: [number, number] = [-60.0, -34.6];
 const DEFAULT_ZOOM = 6;
 
+/** Identificador de la fuente DEM (modelo de elevación) usada por setTerrain. */
+const TERRAIN_SOURCE = "aws-terrain";
+
 /** Capa satelital abierta: Esri World Imagery (sin API key). */
 const SATELLITE_STYLE: maplibregl.StyleSpecification = {
   version: 8,
@@ -32,6 +35,19 @@ const SATELLITE_STYLE: maplibregl.StyleSpecification = {
       maxzoom: 19,
       attribution:
         "Tiles © Esri — Esri, Maxar, Earthstar Geographics y la comunidad GIS",
+    },
+    // DEM público (Terrarium / AWS Open Data) para el relieve 3D. Gratuito y
+    // sin API key. `encoding: "terrarium"` indica a MapLibre cómo decodificar
+    // la elevación a partir de los canales RGB del PNG.
+    [TERRAIN_SOURCE]: {
+      type: "raster-dem",
+      tiles: [
+        "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png",
+      ],
+      encoding: "terrarium",
+      tileSize: 256,
+      attribution:
+        "Elevación © Mapzen / Terrain Tiles (AWS Open Data) — datos SRTM, ASTER y otros",
     },
   },
   layers: [
@@ -367,6 +383,10 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       style: SATELLITE_STYLE,
       center: PAMPAS_CENTER,
       zoom: DEFAULT_ZOOM,
+      // Inclinación inicial + tope de pitch profundo para que el relieve 3D se
+      // perciba de entrada y el usuario pueda inclinar la cámara casi a ras.
+      pitch: 45,
+      maxPitch: 85,
       // SlimSAM necesita leer el bitmap del canvas vía `RawImage.fromCanvas`.
       // Sin `preserveDrawingBuffer`, WebGL descarta el contenido tras cada
       // frame y obtenemos un canvas en negro al hacer la inferencia.
@@ -511,6 +531,12 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
     };
 
     const onLoad = () => {
+      // Relieve 3D: vinculamos el DEM Terrarium ya declarado en el estilo.
+      // Exageración 2.0 porque la topografía pampeana es muy sutil; ayuda a
+      // que se distingan bajos y lomas al inclinar la cámara.
+      if (map.getSource(TERRAIN_SOURCE) && !map.getTerrain()) {
+        map.setTerrain({ source: TERRAIN_SOURCE, exaggeration: 2.0 });
+      }
       setupSearchMarker();
       setupSavedPolygonLayer();
       teardownDraw = setupDraw();

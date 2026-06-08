@@ -46,8 +46,14 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <AlertCircle size={18} aria-hidden />
             </Callout.Icon>
             <Callout.Text>
-              <Text weight="medium">No pudimos completar la operación</Text>
-              <Text as="p" size="2" mt="1" className="text-red-200/90">
+              <Text as="span" weight="medium">
+                No pudimos completar la operación
+              </Text>
+              <Text
+                as="span"
+                size="2"
+                className="mt-1 block text-red-200/90"
+              >
                 {errorMessage}
               </Text>
             </Callout.Text>
@@ -65,10 +71,14 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <CheckCircle2 size={18} aria-hidden />
             </Callout.Icon>
             <Callout.Text>
-              <Text weight="medium" className="text-emerald-100">
+              <Text as="span" weight="medium" className="text-emerald-100">
                 Registro exitoso
               </Text>
-              <Text as="p" size="2" mt="1" className="text-emerald-200/90">
+              <Text
+                as="span"
+                size="2"
+                className="mt-1 block text-emerald-200/90"
+              >
                 {successMessage}
               </Text>
             </Callout.Text>

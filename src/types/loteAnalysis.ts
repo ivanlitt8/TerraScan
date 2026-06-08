@@ -3,22 +3,28 @@ import type { Feature, Polygon } from "geojson";
 /** Tipos de alerta histórica del lote (MVP). */
 export type AlertaTipo = "incendio" | "inundacion";
 
-/** Estado agroclimático de la campaña según NDVI. */
-export type NdviEstado = "Sequía" | "Normal";
-
 export type AlertaHistorica = {
   tipo: AlertaTipo;
   /** Fecha ISO (YYYY-MM-DD). */
   fecha: string;
   descripcion: string;
-};
-
-export type NdviCampania = {
-  /** Año de campaña / serie temporal. */
-  anio: number;
-  /** Valor NDVI medio del lote (típ. 0–1). */
-  ndvi: number;
-  estado: NdviEstado;
+  /**
+   * Dato agronómico de impacto que la tarjeta muestra de forma prominente
+   * (e.g. "16 días de agua", "FRP máx 42.0 MW"). Es el número que el productor
+   * debe leer primero; el resto del contexto va en `detalle`.
+   */
+  impacto?: string;
+  /**
+   * Detalle secundario y sutil (rango de fechas, satélites, IDs de
+   * trazabilidad). Se renderiza en gris menor para no competir con `impacto`.
+   */
+  detalle?: string;
+  /**
+   * Etiqueta de la fuente del dato (e.g. "NASA FIRMS", "Global Flood
+   * Database"). Si no se especifica, el componente usa un default por tipo.
+   * Permite que un dato real declare su origen sin hardcodearlo en la UI.
+   */
+  fuente?: string;
 };
 
 /**
@@ -57,22 +63,19 @@ export type AnalyzeLoteRequestBody = {
 };
 
 /**
- * Modelo que consume la UI (Dashboard).
+ * Identidad del lote que consume el Dashboard. Todos los campos provienen
+ * del backend real (`POST /api/lotes/analyze`): `id`/`nombre` de Supabase,
+ * `hectareas` del cálculo geodésico con Turf y `procesadoEn` del `createdAt`
+ * de Prisma.
  *
- * - `id` y `nombre` provienen del backend (Supabase).
- * - `hectareas` y `procesadoEn` también (cálculo geodésico con Turf + `createdAt` de Prisma).
- * - `scoreSalud`, `alertas` y `ndviSerie` siguen siendo simulados en el front
- *   hasta que se integre Sentinel Hub / NASA FIRMS (ver HISTORIAL del back).
+ * Las métricas (NDVI, score, alertas) NO viven acá: las resuelven hooks
+ * dedicados (`useNDVILayer`, `useIncendios`, `useAnalisisEspacial`) contra
+ * sus endpoints reales, sin mocks intermedios.
  */
 export type LoteAnalysisResult = {
   id: string;
   nombre: string;
   hectareas: number;
-  /** Score de salud histórica del campo (0–100). */
-  scoreSalud: number;
-  alertas: AlertaHistorica[];
-  /** Últimas 8 campañas. */
-  ndviSerie: NdviCampania[];
   /** ISO timestamp del `createdAt` devuelto por el backend. */
   procesadoEn: string;
 };

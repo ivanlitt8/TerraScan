@@ -1,30 +1,30 @@
 "use client";
 
 /**
- * Hook que **pinta la capa NDVI + provee la serie temporal NDVI** del backend.
+ * Hook que **provee la serie temporal NDVI + score de salud** y, por separado,
+ * **pinta la capa raster NDVI** del backend.
  *
- *   1. Fetch autenticado a `GET /api/lotes/:id/salud-analisis` (vía
- *      `lotesService.getSaludAnalisis`). Endpoint compuesto que devuelve
- *      en un solo JSON el PNG (base64), el bbox y la serie estadística
- *      por intervalos `P10D` agregada por Sentinel Hub Statistical API.
- *   2. **Bbox del backend** como fuente de verdad — son las mismas
- *      coordenadas que Sentinel usó para enmarcar el PNG, sin drift posible.
- *      Fallback: cálculo local idéntico a `turf.bbox` si el backend no lo
- *      enviara (defensivo; el endpoint nuevo siempre lo manda).
- *   3. `map.addSource({ type: 'image', url, coordinates })` con las 4 esquinas
- *      del bbox en orden top-left → top-right → bottom-right → bottom-left.
- *   4. `map.addLayer({ type: 'raster', paint: { 'raster-opacity': 0.7 } })`
- *      por encima del raster satelital base, **antes** del polígono guardado
- *      (para que el contorno emerald no quede tapado por el NDVI).
- *   5. Expone `stats: NDVIStatPoint[]` para que el dashboard pueda dibujar
- *      el gráfico de evolución sin hacer otra request.
+ * Diseño en dos responsabilidades desacopladas:
+ *
+ *  A. **Fetch de datos** (`GET /api/lotes/:id/salud-analisis`): se dispara en
+ *     cuanto hay `loteId` + `polygon`, **independiente del toggle visual**.
+ *     Devuelve en un solo JSON el PNG (blob URL), el bbox, la serie estadística
+ *     (`P10D`, Sentinel Hub Statistical API) y el `healthScore`. Expone
+ *     `stats`, `healthScore` y `dataStatus` para que el dashboard muestre el
+ *     gráfico y el score sin esperar a que el usuario active la capa.
+ *
+ *  B. **Capa visual** (`map.addSource/addLayer` raster): se dibuja/oculta según
+ *     `layerEnabled`. **Apagar la capa NO borra los datos** (`stats`,
+ *     `healthScore`): sólo remueve el raster del mapa. El blob URL y el bbox ya
+ *     resueltos se reutilizan, así que togglear es instantáneo (sin re-fetch).
+ *
+ * Bbox: el del backend es la fuente de verdad (mismas coordenadas que Sentinel
+ * usó para enmarcar el PNG). El cálculo local sólo es fallback defensivo.
  *
  * Lifecycle:
- *  - Mientras `enabled === false` no se hace ninguna petición.
- *  - Cambios de `loteId` o `polygon` invalidan la capa anterior: removeLayer,
- *    removeSource, `revokeObjectURL` y nuevo fetch.
- *  - El `cleanup` del effect cancela el fetch en vuelo (AbortController), saca
- *    la capa y libera el blob URL.
+ *  - Cambios de `loteId`/`polygon` invalidan datos y capa: re-fetch + redibujo.
+ *  - El cleanup cancela el fetch en vuelo (AbortController), saca la capa y
+ *    libera el blob URL.
  */
 
 import {
@@ -46,8 +46,13 @@ export type UseNDVILayerOptions = {
   loteId: string | null;
   /** Polígono GeoJSON del lote. Se usa para calcular el bbox del overlay. */
   polygon: Feature<Polygon> | null;
-  /** Si `false`, no carga la capa (o la remueve si ya estaba puesta). */
-  enabled: boolean;
+  /**
+   * Controla **únicamente** si la capa raster se dibuja en el mapa. NO afecta
+   * el fetch de datos (`stats`/`healthScore`), que ocurre apenas hay lote.
+   * `false` → la capa se remueve del mapa pero los datos numéricos se
+   * conservan intactos en el panel.
+   */
+  layerEnabled: boolean;
   /** Rango temporal opcional (default backend = últimos 30 días). */
   from?: string;
   to?: string;
@@ -67,20 +72,29 @@ export type UseNDVILayerOptions = {
   beforeLayerId?: string;
 };
 
-export type NDVILayerStatus =
+/**
+ * Estado del **fetch de datos** NDVI (serie + score). Independiente de si la
+ * capa raster está visible o no en el mapa.
+ */
+export type NDVIDataStatus =
   | { phase: "idle" }
   | { phase: "loading" }
   | { phase: "ready" }
   | { phase: "error"; message: string; isAuthError: boolean };
 
 export type UseNDVILayerReturn = {
-  status: NDVILayerStatus;
+  /**
+   * Estado del fetch de datos (gráfico + score). El dashboard lo usa para
+   * mostrar skeletons mientras carga y el contenido real al resolver.
+   */
+  dataStatus: NDVIDataStatus;
+  /** `true` cuando la capa raster está efectivamente dibujada en el mapa. */
+  layerVisible: boolean;
   /** Fuerza un re-fetch (e.g. después de cambiar el rango de fechas). */
   refresh: () => void;
   /**
    * Serie temporal NDVI (intervalos `P10D` agregados por Sentinel Statistical
-   * API). Vacía mientras `status.phase !== "ready"`. Útil para alimentar
-   * gráficos / tablas en el dashboard sin disparar una segunda request.
+   * API). Vacía mientras `dataStatus.phase !== "ready"`.
    */
   stats: NDVIStatPoint[];
   /**
@@ -180,14 +194,21 @@ function safeRemoveSource(map: maplibregl.Map, sourceId: string): void {
 export function useNDVILayer(
   options: UseNDVILayerOptions,
 ): UseNDVILayerReturn {
-  const { map, loteId, polygon, enabled, from, to, opacity, beforeLayerId } =
+  const { map, loteId, polygon, layerEnabled, from, to, opacity, beforeLayerId } =
     options;
 
-  const [status, setStatus] = useState<NDVILayerStatus>({ phase: "idle" });
+  const [dataStatus, setDataStatus] = useState<NDVIDataStatus>({
+    phase: "idle",
+  });
   const [stats, setStats] = useState<NDVIStatPoint[]>([]);
   const [healthScore, setHealthScore] = useState<HealthScoreSummary | null>(
     null,
   );
+  // PNG (blob URL) y bbox ya resueltos. Persisten aunque la capa esté oculta,
+  // para que togglear el overlay sea instantáneo (sin re-fetch).
+  const [pngObjectUrl, setPngObjectUrl] = useState<string | null>(null);
+  const [resolvedBbox, setResolvedBbox] = useState<NDVIBbox | null>(null);
+  const [layerVisible, setLayerVisible] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
 
   const refresh = useCallback(() => {
@@ -206,28 +227,28 @@ export function useNDVILayer(
     [polygon],
   );
 
+  // ── Efecto A: FETCH DE DATOS ─────────────────────────────────────────────
+  // Se dispara apenas hay `loteId` + bbox, sin importar `layerEnabled`. Así el
+  // gráfico y el score cargan en cuanto se selecciona el lote.
   useEffect(() => {
-    if (!map || !enabled || !loteId || !localBbox) {
-      // Si el hook se "apaga" (toggle off, lote nulo, etc.) limpiamos lo que
-      // hubiera quedado pintado del run anterior.
-      if (map) {
-        safeRemoveLayer(map, LAYER_ID);
-        safeRemoveSource(map, SOURCE_ID);
-      }
+    if (!loteId || !localBbox) {
+      // Sin lote: descartamos datos y el PNG. La capa la limpia el efecto B.
       if (objectUrlRef.current) {
         revokeNDVIObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
       setStats([]);
       setHealthScore(null);
-      setStatus({ phase: "idle" });
+      setPngObjectUrl(null);
+      setResolvedBbox(null);
+      setDataStatus({ phase: "idle" });
       return;
     }
 
     const controller = new AbortController();
     let cancelled = false;
 
-    setStatus({ phase: "loading" });
+    setDataStatus({ phase: "loading" });
 
     (async () => {
       try {
@@ -244,16 +265,13 @@ export function useNDVILayer(
         });
 
         if (cancelled) {
-          // El effect se desmontó mientras esperábamos: revocamos
-          // inmediatamente para no leakar el blob.
           revokeNDVIObjectURL(objectUrl);
           return;
         }
 
-        // **Fuente de verdad del bbox**: lo que devolvió el backend en el
-        // JSON — son las mismas coordenadas que Sentinel usó para enmarcar
-        // el PNG. El fallback local sólo aplica si por alguna razón
-        // hipotética el backend mandara `bbox` ausente/nulo en el JSON.
+        // **Fuente de verdad del bbox**: el que devolvió el backend (idéntico
+        // al que Sentinel usó para enmarcar el PNG). El fallback local sólo
+        // aplica si el backend mandara `bbox` ausente/nulo.
         const effectiveBbox: NDVIBbox = backendBbox ?? localBbox;
         if (!backendBbox) {
           console.warn(
@@ -262,68 +280,21 @@ export function useNDVILayer(
           );
         }
 
-        // Si el style del mapa todavía no terminó de cargar, `addSource` tira.
-        // Esperamos a `idle` (frame completo) o `load` (estilo listo) según
-        // el caso. En la práctica el mapa ya cargó antes de que el usuario
-        // abra el dashboard del lote, así que el `if` es defensivo.
-        if (!map.isStyleLoaded()) {
-          await new Promise<void>((resolve) => {
-            map.once("idle", () => resolve());
-          });
-          if (cancelled) {
-            revokeNDVIObjectURL(objectUrl);
-            return;
-          }
-        }
-
-        // Si llegó otro NDVI antes, revocamos el viejo.
+        // Revocamos el blob anterior antes de adoptar el nuevo.
         if (objectUrlRef.current) {
           revokeNDVIObjectURL(objectUrlRef.current);
         }
         objectUrlRef.current = objectUrl;
 
-        // Limpieza pre-add: si re-renderizamos con un loteId nuevo, removemos
-        // la capa anterior con el sourceId compartido (sólo una capa NDVI
-        // viva a la vez por mapa).
-        safeRemoveLayer(map, LAYER_ID);
-        safeRemoveSource(map, SOURCE_ID);
-
-        map.addSource(SOURCE_ID, {
-          type: "image",
-          url: objectUrl,
-          coordinates: bboxToImageCoordinates(effectiveBbox),
-        });
-
-        // `beforeId` controla el orden Z dentro del style. Si se provee y la
-        // capa existe, el NDVI queda debajo de ella; si no existe, MapLibre
-        // ignora el parámetro y pinta al tope (comportamiento aceptable).
-        const layerSpec: maplibregl.RasterLayerSpecification = {
-          id: LAYER_ID,
-          type: "raster",
-          source: SOURCE_ID,
-          paint: {
-            "raster-opacity": opacity ?? DEFAULT_OPACITY,
-            // `raster-fade-duration: 0` evita el fade-in default de 300ms;
-            // para overlays bajo demanda el flash es más rápido de entender.
-            "raster-fade-duration": 0,
-          },
-        };
-
-        if (beforeLayerId && map.getLayer(beforeLayerId)) {
-          map.addLayer(layerSpec, beforeLayerId);
-        } else {
-          map.addLayer(layerSpec);
-        }
-
-        // Stats: aseguramos orden cronológico ascendente para los charts.
-        // Sentinel suele devolverlo ya ordenado, pero ordenamos defensivamente
-        // para no acoplarnos a un detalle de implementación remoto.
+        // Stats: orden cronológico ascendente defensivo para los charts.
         const orderedStats = [...backendStats].sort((a, b) =>
           a.fecha.localeCompare(b.fecha),
         );
         setStats(orderedStats);
         setHealthScore(backendHealthScore);
-        setStatus({ phase: "ready" });
+        setPngObjectUrl(objectUrl);
+        setResolvedBbox(effectiveBbox);
+        setDataStatus({ phase: "ready" });
       } catch (cause) {
         if (cancelled) return;
 
@@ -336,35 +307,83 @@ export function useNDVILayer(
             ? cause.message
             : cause instanceof Error
               ? cause.message
-              : "No se pudo cargar la capa NDVI.";
+              : "No se pudo cargar el análisis NDVI.";
         const isAuthError =
           cause instanceof ApiServiceError && cause.status === 401;
 
         console.error("[useNDVILayer] ✕", cause);
         setStats([]);
         setHealthScore(null);
-        setStatus({ phase: "error", message, isAuthError });
+        setPngObjectUrl(null);
+        setResolvedBbox(null);
+        setDataStatus({ phase: "error", message, isAuthError });
       }
     })();
 
     return () => {
       cancelled = true;
       controller.abort();
-      // No removemos el blob URL acá si la capa quedó pintada y exitosa: el
-      // próximo run (con loteId nuevo o `enabled=false`) hará la limpieza.
-      // Si NO quedó pintada (error), el catch ya descartó el blob.
     };
-  }, [
-    beforeLayerId,
-    enabled,
-    from,
-    loteId,
-    localBbox,
-    map,
-    opacity,
-    refreshToken,
-    to,
-  ]);
+  }, [loteId, localBbox, from, to, refreshToken]);
+
+  // ── Efecto B: CAPA VISUAL ────────────────────────────────────────────────
+  // Dibuja u oculta el raster según `layerEnabled`, reutilizando el PNG ya
+  // resuelto. Apagar la capa NO toca `stats`/`healthScore`.
+  useEffect(() => {
+    if (!map) return;
+
+    if (!layerEnabled || !pngObjectUrl || !resolvedBbox) {
+      safeRemoveLayer(map, LAYER_ID);
+      safeRemoveSource(map, SOURCE_ID);
+      setLayerVisible(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      // Si el estilo del mapa todavía no terminó de cargar, `addSource` tira.
+      if (!map.isStyleLoaded()) {
+        await new Promise<void>((resolve) => {
+          map.once("idle", () => resolve());
+        });
+        if (cancelled) return;
+      }
+
+      safeRemoveLayer(map, LAYER_ID);
+      safeRemoveSource(map, SOURCE_ID);
+
+      map.addSource(SOURCE_ID, {
+        type: "image",
+        url: pngObjectUrl,
+        coordinates: bboxToImageCoordinates(resolvedBbox),
+      });
+
+      const layerSpec: maplibregl.RasterLayerSpecification = {
+        id: LAYER_ID,
+        type: "raster",
+        source: SOURCE_ID,
+        paint: {
+          "raster-opacity": opacity ?? DEFAULT_OPACITY,
+          "raster-fade-duration": 0,
+        },
+      };
+
+      if (beforeLayerId && map.getLayer(beforeLayerId)) {
+        map.addLayer(layerSpec, beforeLayerId);
+      } else {
+        map.addLayer(layerSpec);
+      }
+
+      setLayerVisible(true);
+    })();
+
+    return () => {
+      cancelled = true;
+      safeRemoveLayer(map, LAYER_ID);
+      safeRemoveSource(map, SOURCE_ID);
+    };
+  }, [map, layerEnabled, pngObjectUrl, resolvedBbox, beforeLayerId, opacity]);
 
   // Cleanup final al desmontar: el caller puede haber removido el `map` ya,
   // así que defensivamente verificamos.
@@ -381,5 +400,5 @@ export function useNDVILayer(
     };
   }, [map]);
 
-  return { status, refresh, stats, healthScore };
+  return { dataStatus, layerVisible, refresh, stats, healthScore };
 }

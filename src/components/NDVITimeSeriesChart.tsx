@@ -5,18 +5,16 @@
  * devuelve `GET /api/lotes/:id/salud-analisis` (Sentinel Hub Statistical
  * API agregada por intervalos `P10D`).
  *
- * No reemplaza al `NDVIChart` histórico (por campañas anuales) — convive
- * con él: el `DashboardLote` muestra este chart cuando hay stats reales
- * disponibles (NDVI cargado), y vuelve al histórico cuando no las hay.
- *
- * Comparación con `NDVIChart`:
- *  - Eje X: fechas (intervalos de 10 días) en vez de años de campaña.
+ * Es el único gráfico NDVI del dashboard (ya no hay fallback histórico mock):
+ *  - Eje X: fechas (intervalos de 10 días).
  *  - Origen: respuesta real de Sentinel, no mock.
  *  - Estado: derivado al vuelo por banda NDVI (sin clasificación humana).
+ *  - Si la serie llega vacía (todo descartado por nubes), muestra un
+ *    placeholder honesto en vez de ejes flotando.
  */
 
 import type { NDVIStatPoint } from "@/services";
-import { Box, Card, Flex, Heading, Text } from "@radix-ui/themes";
+import { Box, Card, Flex, Text } from "@radix-ui/themes";
 import {
   CartesianGrid,
   Line,
@@ -29,8 +27,6 @@ import {
 
 type NDVITimeSeriesChartProps = {
   serie: NDVIStatPoint[];
-  /** Rango temporal informativo (e.g. "últimos 30 días"). */
-  rangoLabel?: string;
 };
 
 type ChartPoint = NDVIStatPoint & {
@@ -68,6 +64,17 @@ const BANDA_LABEL: Record<ChartPoint["banda"], string> = {
   moderada: "Vegetación moderada",
   vigorosa: "Vegetación vigorosa",
 };
+
+/**
+ * Leyenda compacta (una sola fila) al pie del gráfico. Resumimos las 4 bandas
+ * en 3 hitos legibles para no robar aire vertical; el detalle fino por punto
+ * sigue disponible en el tooltip.
+ */
+const LEGEND_RANGOS: { banda: ChartPoint["banda"]; label: string }[] = [
+  { banda: "estres", label: "Estrés" },
+  { banda: "pobre", label: "Pobre" },
+  { banda: "vigorosa", label: "Vigorosa" },
+];
 
 function classifyBanda(ndvi: number): ChartPoint["banda"] {
   if (ndvi < 0.2) return "estres";
@@ -163,7 +170,6 @@ function NdviTooltip({
 
 export default function NDVITimeSeriesChart({
   serie,
-  rangoLabel = "últimos 30 días",
 }: NDVITimeSeriesChartProps) {
   const data: ChartPoint[] = [...serie]
     .sort((a, b) => a.fecha.localeCompare(b.fecha))
@@ -178,63 +184,42 @@ export default function NDVITimeSeriesChart({
   // de un chart vacío con ejes flotando.
   if (data.length === 0) {
     return (
-      <Box>
-        <Heading size="2" weight="medium">
-          Evolución del vigor (NDVI)
-        </Heading>
-        <Text as="p" size="1" color="gray" mt="1">
-          Sentinel-2 · {rangoLabel}
+      <Card variant="ghost">
+        <Text size="1" color="gray" align="center" as="p">
+          No hay datos NDVI disponibles para el período seleccionado (posible
+          cobertura nubosa total).
         </Text>
-        <Card mt="3" variant="ghost">
-          <Text size="1" color="gray" align="center" as="p">
-            No hay datos NDVI disponibles para el período seleccionado
-            (posible cobertura nubosa total).
-          </Text>
-        </Card>
-      </Box>
+      </Card>
     );
   }
 
-  const ndviValues = data.map((d) => d.ndvi);
-  // Eje Y siempre incluye 0 como referencia agronómica (debajo de 0 ya es
-  // agua/nieve). Tope dinámico para aprovechar el espacio cuando los valores
-  // son bajos.
-  const yMin = Math.min(0, Math.floor(Math.min(...ndviValues) * 10) / 10);
-  const yMax = Math.min(1, Math.ceil((Math.max(...ndviValues) + 0.05) * 10) / 10);
-
   return (
     <Box>
-      <Heading size="2" weight="medium">
-        Evolución del vigor (NDVI)
-      </Heading>
-      <Text as="p" size="1" color="gray" mt="1">
-        Sentinel-2 L2A · {rangoLabel} · intervalos de 10 días
-      </Text>
-
-      <Box mt="4" height="208px" width="100%">
+      <Box height="172px" width="100%">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={data}
-            margin={{ top: 8, right: 8, left: -8, bottom: 0 }}
+            margin={{ top: 5, right: 10, left: -25, bottom: 0 }}
           >
             <CartesianGrid
               strokeDasharray="3 3"
-              stroke="var(--gray-a6)"
+              stroke="var(--gray-a3)"
               vertical={false}
             />
             <XAxis
               dataKey="label"
               tick={{ fill: "var(--gray-11)", fontSize: 11 }}
-              axisLine={{ stroke: "var(--gray-a8)" }}
-              tickLine={{ stroke: "var(--gray-a8)" }}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={24}
             />
             <YAxis
-              domain={[yMin, yMax]}
+              domain={["dataMin - 0.05", "dataMax + 0.05"]}
+              tickCount={4}
               tick={{ fill: "var(--gray-11)", fontSize: 11 }}
-              axisLine={{ stroke: "var(--gray-a8)" }}
-              tickLine={{ stroke: "var(--gray-a8)" }}
-              tickFormatter={(v: number) => v.toFixed(1)}
-              width={32}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(v: number) => v.toFixed(2)}
             />
             <Tooltip content={<NdviTooltip />} />
             <Line
@@ -243,23 +228,22 @@ export default function NDVITimeSeriesChart({
               stroke="var(--jade-9)"
               strokeWidth={2.5}
               dot={({ cx, cy, payload }) => {
-                if (cx == null || cy == null || !payload) return null;
+                if (cx == null || cy == null || !payload) return <g />;
                 const p = payload as ChartPoint;
                 return (
                   <circle
                     key={p.fecha}
                     cx={cx}
                     cy={cy}
-                    r={5}
+                    r={3.5}
                     fill={BANDA_COLOR[p.banda]}
-                    stroke="var(--gray-1)"
-                    strokeWidth={2}
+                    strokeWidth={0}
                   />
                 );
               }}
               activeDot={{
-                r: 7,
-                fill: "var(--jade-8)",
+                r: 5,
+                fill: "var(--jade-10)",
                 stroke: "var(--gray-1)",
                 strokeWidth: 2,
               }}
@@ -270,22 +254,27 @@ export default function NDVITimeSeriesChart({
         </ResponsiveContainer>
       </Box>
 
-      <Flex gap="3" mt="3" wrap="wrap">
-        {(Object.keys(BANDA_LABEL) as ChartPoint["banda"][]).map((banda) => (
-          <Flex key={banda} align="center" gap="2">
-            <Box
-              width="8px"
-              height="8px"
-              style={{
-                borderRadius: "var(--radius-full)",
-                backgroundColor: BANDA_COLOR[banda],
-              }}
-            />
-            <Text size="1" color="gray">
-              {BANDA_LABEL[banda]}
-            </Text>
-          </Flex>
-        ))}
+      <Flex justify="between" align="center" pt="1" mt="2">
+        <Text size="1" color="gray">
+          Rangos:
+        </Text>
+        <Flex align="center" gap="3">
+          {LEGEND_RANGOS.map(({ banda, label }) => (
+            <Flex key={banda} align="center" gap="1">
+              <Box
+                width="8px"
+                height="8px"
+                style={{
+                  borderRadius: "2px",
+                  backgroundColor: BANDA_COLOR[banda],
+                }}
+              />
+              <Text size="1" color="gray">
+                {label}
+              </Text>
+            </Flex>
+          ))}
+        </Flex>
       </Flex>
     </Box>
   );

@@ -6,9 +6,47 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/*
+ * Paleta "Agro-SaaS" premium — única fuente de verdad del fondo de la UI.
+ * Los valores espejan el slate de Tailwind que ya usa el panel izquierdo
+ * (PanelLotesList), de modo que buscador, panel izquierdo y panel derecho
+ * compartan exactamente el mismo tono azulado/petróleo.
+ */
+:root {
+  --agro-base: #020617; /* slate-950 — fondo base de paneles sólidos */
+  --agro-base-alpha: rgba(2, 6, 23, 0.75); /* buscador flotante + blur */
+  --agro-elevated-alpha: rgba(15, 23, 42, 0.6); /* slate-900/60 — tarjetas/inputs */
+  --agro-border: rgba(30, 41, 59, 0.8); /* slate-800/80 — bordes sutiles */
+}
+
 body {
   margin: 0;
   min-height: 100%;
+}
+
+/* Fondo base unificado para un panel (panel derecho del workspace). */
+.agro-panel {
+  background: var(--agro-base);
+}
+
+/*
+ * Re-skin de las superficies de Radix (Card / TextField con variant="surface")
+ * para que tomen la misma elevación que las tarjetas de la lista izquierda:
+ * fondo ~5% más claro que la base + el borde sutil de Radix. Override del
+ * token oficial `--color-surface` de forma scopeada → no toca focus ni radios.
+ */
+.agro-surface {
+  --color-surface: var(--agro-elevated-alpha);
+}
+
+/* Buscador flotante: base translúcida + desenfoque (efecto cristal). */
+.agro-glass {
+  background-color: var(--agro-base-alpha);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  /* Borde único (reemplaza el ring de Radix) + sombra flotante como el panel izq. */
+  border: 1px solid var(--agro-border);
+  box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.6);
 }
 
 /* mapbox-gl-draw sobre MapLibre: cursores y clases de modo */
