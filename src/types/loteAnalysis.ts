@@ -40,6 +40,8 @@ export type LoteBackendResponse = {
   dataProcesada: Record<string, unknown>;
   createdAt: string;
   userId: string;
+  /** Establecimiento al que pertenece el lote, o `null` si está sin agrupar. */
+  establecimientoId?: string | null;
 };
 
 /**
@@ -54,12 +56,19 @@ export type LoteListItem = {
   nombre: string;
   areaHectareas: number;
   createdAt: string;
+  /**
+   * Establecimiento al que pertenece el lote, o `null` si está sin agrupar.
+   * Lo devuelve el backend en el `select` de `GET /api/lotes`.
+   */
+  establecimientoId?: string | null;
 };
 
 /** Body que enviamos al backend al confirmar un lote. */
 export type AnalyzeLoteRequestBody = {
   nombre: string;
   poligonoGeoJSON: Feature<Polygon>;
+  /** Establecimiento al que asignar el lote al crearlo (opcional). */
+  establecimientoId?: string | null;
 };
 
 /**

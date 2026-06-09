@@ -7,6 +7,7 @@ export {
   fetchNominatimGeocode,
   renameLote,
   searchLocation,
+  setLoteEstablecimiento,
 } from "./apiService";
 
 export {
@@ -36,3 +37,21 @@ export {
   type FloodEvent,
   type FuenteAnalizada,
 } from "./analisisService";
+
+export {
+  fetchDashboard,
+  type DashboardKpis,
+  type DashboardResponse,
+  type MatrizRiesgoHidricoItem,
+  type MonitorIncendioItem,
+} from "./dashboardService";
+
+export {
+  createEstablecimiento,
+  deleteEstablecimiento,
+  fetchEstablecimientoById,
+  fetchEstablecimientos,
+  updateEstablecimiento,
+  type EstablecimientoDetalle,
+  type EstablecimientoListItem,
+} from "./establecimientosService";

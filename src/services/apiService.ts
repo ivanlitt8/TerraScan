@@ -198,10 +198,16 @@ export async function analyzeLote(
   const payload: AnalyzeLoteRequestBody = {
     nombre: body.nombre,
     poligonoGeoJSON: sanitizePoligonoGeoJSON(body.poligonoGeoJSON),
+    // Sólo lo incluimos si hay un establecimiento elegido; el backend lo
+    // valida con `@IsUUID` y rechazaría `null`/`""`.
+    ...(body.establecimientoId
+      ? { establecimientoId: body.establecimientoId }
+      : {}),
   };
 
   console.info("[analyzeLote] → POST", ANALYZE_LOTE_ENDPOINT, {
     nombre: payload.nombre,
+    establecimientoId: payload.establecimientoId ?? null,
     vertices: payload.poligonoGeoJSON.geometry.coordinates[0]?.length ?? 0,
   });
 
@@ -309,6 +315,41 @@ export async function renameLote(
   const data = await parseJson<LoteBackendResponse>(response);
   console.info("[renameLote] ← OK", { id: data.id, nombre: data.nombre });
   return data;
+}
+
+/**
+ * Cliente → backend NestJS (`PATCH {NEXT_PUBLIC_API_URL}/api/lotes/:id`).
+ *
+ * (Re)asigna un lote a un establecimiento, o lo desagrupa enviando `null`.
+ * Devuelve la fila actualizada para refrescar el estado en el acto.
+ */
+export async function setLoteEstablecimiento(
+  loteId: string,
+  establecimientoId: string | null,
+): Promise<LoteBackendResponse> {
+  console.info("[setLoteEstablecimiento] → PATCH", `${LIST_LOTES_ENDPOINT}/${loteId}`, {
+    establecimientoId,
+  });
+
+  const response = await authenticatedFetch(`${LIST_LOTES_ENDPOINT}/${loteId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ establecimientoId }),
+  });
+
+  if (!response.ok) {
+    const apiError = await parseBackendError(
+      response,
+      "No se pudo actualizar el establecimiento del lote.",
+    );
+    console.error(
+      "[setLoteEstablecimiento] ✕ HTTP",
+      apiError.status,
+      apiError.message,
+    );
+    throw apiError;
+  }
+
+  return parseJson<LoteBackendResponse>(response);
 }
 
 /**

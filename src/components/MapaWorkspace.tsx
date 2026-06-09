@@ -1,5 +1,8 @@
 "use client";
 
+import CrearLoteDialog, {
+  type CrearLoteValues,
+} from "@/components/CrearLoteDialog";
 import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
@@ -15,7 +18,13 @@ import {
 } from "@/hooks/useNDVISerie";
 import { clusterizarDetecciones } from "@/lib/incendiosClustering";
 import type { FlyToLocation } from "@/lib/locationSearch";
-import { analyzeLote, ApiServiceError, deleteLote, renameLote } from "@/services";
+import {
+  analyzeLote,
+  ApiServiceError,
+  deleteLote,
+  fetchLoteById,
+  renameLote,
+} from "@/services";
 import type {
   LoteAnalysisResult,
   LoteBackendResponse,
@@ -45,6 +54,29 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const SAVED_POLYGON_FILL_LAYER_ID = "terrascan-saved-polygon-fill";
 const SAVED_POLYGON_LINE_LAYER_ID = "terrascan-saved-polygon-line";
 
+/**
+ * Área (en hectáreas) del anillo exterior de un polígono GeoJSON usando la
+ * aproximación esférica estándar. Sólo para mostrar contexto en el diálogo de
+ * creación; el valor oficial lo recalcula el backend con Turf.
+ */
+function calcularHectareas(polygon: Feature<Polygon> | null): number {
+  const ring = polygon?.geometry?.coordinates?.[0];
+  if (!ring || ring.length < 4) return 0;
+
+  const R = 6378137; // radio terrestre (m)
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  let total = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const [lon1, lat1] = ring[i];
+    const [lon2, lat2] = ring[i + 1];
+    total +=
+      toRad(lon2 - lon1) *
+      (2 + Math.sin(toRad(lat1)) + Math.sin(toRad(lat2)));
+  }
+  const areaM2 = Math.abs((total * R * R) / 2);
+  return areaM2 / 10_000;
+}
+
 export default function MapaWorkspace() {
   const router = useRouter();
   const mapRef = useRef<MapHandle>(null);
@@ -56,6 +88,10 @@ export default function MapaWorkspace() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<LoteAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  // Diálogo previo a la creación (nombre + establecimiento). El nombre
+  // sugerido se congela al abrir para usarse como placeholder estable.
+  const [crearDialogOpen, setCrearDialogOpen] = useState(false);
+  const [nombreSugerido, setNombreSugerido] = useState("");
   const [isLotesPanelOpen, setIsLotesPanelOpen] = useState(false);
   const [ndviEnabled, setNdviEnabled] = useState(false);
   // Período del gráfico NDVI (solo afecta al gráfico; el score y la capa
@@ -72,6 +108,10 @@ export default function MapaWorkspace() {
 
   const panelOpen = Boolean(analysis);
   const showMapToolbar = !panelOpen && !isAnalyzing;
+  const areaHectareasPoligono = useMemo(
+    () => calcularHectareas(polygon),
+    [polygon],
+  );
 
   const handleMapReady = useCallback((instance: maplibregl.Map) => {
     setMapInstance(instance);
@@ -272,7 +312,29 @@ export default function MapaWorkspace() {
     resetAnalysis();
   };
 
-  const handleConfirm = async () => {
+  /** Nombre por defecto fechado, usado como placeholder y fallback del diálogo. */
+  const generarNombreSugerido = () =>
+    `Lote — ${new Date().toLocaleString("es-AR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    })}`;
+
+  /**
+   * Abre el diálogo de creación. NO crea el lote: si el usuario cancela, el
+   * polígono y el estado "Confirmar lote" se conservan intactos.
+   */
+  const handleOpenCrearDialog = () => {
+    if (!polygon || isAnalyzing) return;
+    setAnalysisError(null);
+    setNombreSugerido(generarNombreSugerido());
+    setCrearDialogOpen(true);
+  };
+
+  /**
+   * Crea el lote con el nombre y establecimiento elegidos en el diálogo.
+   * El backend exige `nombre` (1–120 chars) en el DTO `AnalyzeLoteDto`.
+   */
+  const handleConfirm = async (values: CrearLoteValues) => {
     if (!polygon || isAnalyzing) return;
     setConfirmed(true);
     setAnalysisError(null);
@@ -280,15 +342,12 @@ export default function MapaWorkspace() {
     setIsAnalyzing(true);
     mapRef.current?.lockEditing();
 
-    // Mientras no exista UI para nombrar el lote, generamos un nombre por defecto
-    // fechado. El backend exige `nombre` (1–120 chars) en el DTO `AnalyzeLoteDto`.
-    const nombre = `Lote — ${new Date().toLocaleString("es-AR", {
-      dateStyle: "short",
-      timeStyle: "short",
-    })}`;
-
     try {
-      const lote = await analyzeLote({ nombre, poligonoGeoJSON: polygon });
+      const lote = await analyzeLote({
+        nombre: values.nombre,
+        poligonoGeoJSON: polygon,
+        establecimientoId: values.establecimientoId,
+      });
 
       // Sólo guardamos la identidad real del lote (Supabase + Turf). Las
       // métricas (NDVI, score, incendios, inundaciones) las resuelven los
@@ -299,6 +358,7 @@ export default function MapaWorkspace() {
         hectareas: lote.areaHectareas,
         procesadoEn: lote.createdAt,
       });
+      setCrearDialogOpen(false);
     } catch (error) {
       if (error instanceof ApiServiceError && error.status === 401) {
         const search = new URLSearchParams({
@@ -315,6 +375,7 @@ export default function MapaWorkspace() {
           : "No se pudo completar el análisis del lote.";
       setAnalysisError(message);
       setConfirmed(false);
+      setCrearDialogOpen(false);
       mapRef.current?.unlockEditing();
     } finally {
       setIsAnalyzing(false);
@@ -437,6 +498,30 @@ export default function MapaWorkspace() {
       }
     };
   }, [mapInstance, handleSelectLote]);
+
+  // Deep-link desde el Dashboard (`/mapa?lote=<id>`): apenas el mapa está
+  // listo, traemos el lote por id y lo seleccionamos (abre el panel + enfoca
+  // la cámara). Se ejecuta una sola vez y limpia el query de la URL para no
+  // re-disparar al re-renderizar o navegar internamente.
+  const deepLinkHandledRef = useRef(false);
+  useEffect(() => {
+    if (!mapInstance || deepLinkHandledRef.current) return;
+
+    const loteId = new URLSearchParams(window.location.search).get("lote");
+    if (!loteId) return;
+
+    deepLinkHandledRef.current = true;
+    window.history.replaceState(null, "", "/mapa");
+
+    fetchLoteById(loteId)
+      .then((lote) => handleSelectLote(lote))
+      .catch((error) => {
+        if (error instanceof ApiServiceError && error.status === 401) {
+          redirectToLogin("Tu sesión expiró. Iniciá sesión nuevamente.");
+        }
+        // 404/otros: no enfocamos nada; el usuario queda en el mapa base.
+      });
+  }, [mapInstance, handleSelectLote, redirectToLogin]);
 
   useEffect(() => {
     if (!panelOpen) return;
@@ -775,7 +860,7 @@ export default function MapaWorkspace() {
                 variant="solid"
                 color="grass"
                 disabled={!polygon || isAnalyzing}
-                onClick={() => void handleConfirm()}
+                onClick={handleOpenCrearDialog}
               >
                 Confirmar lote
               </Button>
@@ -834,6 +919,16 @@ export default function MapaWorkspace() {
           />
         </Box>
       )}
+
+      <CrearLoteDialog
+        open={crearDialogOpen}
+        onOpenChange={setCrearDialogOpen}
+        nombreSugerido={nombreSugerido}
+        hectareas={areaHectareasPoligono}
+        creating={isAnalyzing}
+        onConfirm={(values) => void handleConfirm(values)}
+        onAuthError={handleAuthError}
+      />
     </Grid>
   );
 }
