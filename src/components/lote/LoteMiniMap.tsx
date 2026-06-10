@@ -58,6 +58,13 @@ type LoteMiniMapProps = {
   polygon: Feature<Polygon>;
   /** Alto del contenedor en px. */
   height?: number;
+  /**
+   * Callback best-effort con un snapshot PNG (data URL) del mapa una vez que
+   * las teselas satelitales terminaron de cargar. Se usa para incrustar la
+   * vista satelital en el reporte PDF. Devuelve `null` si el canvas quedó
+   * "tainted" por CORS o el navegador no permitió exportarlo.
+   */
+  onSnapshot?: (dataUrl: string | null) => void;
 };
 
 /**
@@ -68,9 +75,14 @@ type LoteMiniMapProps = {
 export default function LoteMiniMap({
   polygon,
   height = 260,
+  onSnapshot,
 }: LoteMiniMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  // Mantenemos `onSnapshot` en un ref para no re-crear el mapa si el callback
+  // cambia de identidad entre renders.
+  const onSnapshotRef = useRef(onSnapshot);
+  onSnapshotRef.current = onSnapshot;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -89,9 +101,13 @@ export default function LoteMiniMap({
       keyboard: false,
       doubleClickZoom: false,
       touchZoomRotate: false,
+      // Necesario para poder exportar el canvas con `toDataURL` (snapshot PDF).
+      // En MapLibre v5 los atributos del contexto WebGL viven acá.
+      canvasContextAttributes: { preserveDrawingBuffer: true },
     });
 
     mapRef.current = map;
+    let snapshotDone = false;
 
     map.on("load", () => {
       map.addSource(POLYGON_SOURCE, {
@@ -136,6 +152,22 @@ export default function LoteMiniMap({
           maxZoom: 15,
         });
       }
+
+      // Snapshot best-effort cuando el mapa quedó quieto y las teselas
+      // terminaron de cargar. `idle` se dispara tras el primer render estable.
+      const handleIdle = () => {
+        if (snapshotDone || !onSnapshotRef.current) return;
+        snapshotDone = true;
+        map.off("idle", handleIdle);
+        try {
+          const dataUrl = map.getCanvas().toDataURL("image/png");
+          onSnapshotRef.current(dataUrl);
+        } catch (cause) {
+          console.warn("[LoteMiniMap] No se pudo exportar el snapshot", cause);
+          onSnapshotRef.current(null);
+        }
+      };
+      map.on("idle", handleIdle);
     });
 
     const resizeObserver = new ResizeObserver(() => map.resize());

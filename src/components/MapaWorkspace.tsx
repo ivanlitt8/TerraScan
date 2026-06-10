@@ -7,6 +7,7 @@ import DashboardLote from "@/components/DashboardLote";
 import LocationSearch from "@/components/LocationSearch";
 import Map, { type MapHandle } from "@/components/Map";
 import PanelLotesList from "@/components/PanelLotesList";
+import SubirLoteDialog from "@/components/SubirLoteDialog";
 import { useAnalisisEspacial } from "@/hooks/useAnalisisEspacial";
 import { useIncendios } from "@/hooks/useIncendios";
 import { useLoteVarita } from "@/hooks/useLoteVarita";
@@ -16,6 +17,7 @@ import {
   useNDVISerie,
   type NDVIPeriodId,
 } from "@/hooks/useNDVISerie";
+import { calcularHectareas } from "@/lib/geojson";
 import { clusterizarDetecciones } from "@/lib/incendiosClustering";
 import type { FlyToLocation } from "@/lib/locationSearch";
 import {
@@ -39,7 +41,7 @@ import {
   Tooltip,
 } from "@radix-ui/themes";
 import type { Feature, Polygon } from "geojson";
-import { Layers, Loader2, Sparkles, X } from "lucide-react";
+import { CloudUpload, Layers, Loader2, Sparkles, X } from "lucide-react";
 import type maplibregl from "maplibre-gl";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -53,29 +55,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
  */
 const SAVED_POLYGON_FILL_LAYER_ID = "terrascan-saved-polygon-fill";
 const SAVED_POLYGON_LINE_LAYER_ID = "terrascan-saved-polygon-line";
-
-/**
- * Área (en hectáreas) del anillo exterior de un polígono GeoJSON usando la
- * aproximación esférica estándar. Sólo para mostrar contexto en el diálogo de
- * creación; el valor oficial lo recalcula el backend con Turf.
- */
-function calcularHectareas(polygon: Feature<Polygon> | null): number {
-  const ring = polygon?.geometry?.coordinates?.[0];
-  if (!ring || ring.length < 4) return 0;
-
-  const R = 6378137; // radio terrestre (m)
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  let total = 0;
-  for (let i = 0; i < ring.length - 1; i++) {
-    const [lon1, lat1] = ring[i];
-    const [lon2, lat2] = ring[i + 1];
-    total +=
-      toRad(lon2 - lon1) *
-      (2 + Math.sin(toRad(lat1)) + Math.sin(toRad(lat2)));
-  }
-  const areaM2 = Math.abs((total * R * R) / 2);
-  return areaM2 / 10_000;
-}
 
 export default function MapaWorkspace() {
   const router = useRouter();
@@ -93,6 +72,7 @@ export default function MapaWorkspace() {
   const [crearDialogOpen, setCrearDialogOpen] = useState(false);
   const [nombreSugerido, setNombreSugerido] = useState("");
   const [isLotesPanelOpen, setIsLotesPanelOpen] = useState(false);
+  const [subirDialogOpen, setSubirDialogOpen] = useState(false);
   const [ndviEnabled, setNdviEnabled] = useState(false);
   // Período del gráfico NDVI (solo afecta al gráfico; el score y la capa
   // siguen usando la ventana "actual" de 30 días).
@@ -226,6 +206,27 @@ export default function MapaWorkspace() {
     onActivate: handleVaritaActivate,
     onFallbackToManual: handleVaritaFallbackToManual,
   });
+
+  /**
+   * Carga un lote desde un GeoJSON validado en el navegador. Reutiliza el
+   * mismo camino que el dibujo manual / IA (`setPolygon` → `onPolygonChange`),
+   * limpia cualquier selección previa y encuadra la cámara sobre el polígono
+   * (`fitToPolygon`) para dar feedback visual inmediato.
+   */
+  const handleGeoJSONUploaded = useCallback(
+    (feature: Feature<Polygon>) => {
+      setSubirDialogOpen(false);
+      setIsLotesPanelOpen(false);
+      varita.deactivate();
+      setConfirmed(false);
+      resetAnalysis();
+      mapRef.current?.clearSavedPolygon();
+      mapRef.current?.unlockEditing();
+      mapRef.current?.setPolygon(feature);
+      mapRef.current?.fitToPolygon(feature);
+    },
+    [resetAnalysis, varita],
+  );
 
   // NDVI: el hook hace dos cosas desacopladas.
   //  1. Datos (serie + score): se piden apenas hay lote confirmado + polígono,
@@ -619,6 +620,21 @@ export default function MapaWorkspace() {
                   </IconButton>
                 </Tooltip>
 
+                <Tooltip content="Subir Lote (GeoJSON)" side="right">
+                  <IconButton
+                    type="button"
+                    size="3"
+                    radius="full"
+                    variant="solid"
+                    color="cyan"
+                    aria-label="Subir lote desde un archivo GeoJSON"
+                    disabled={isAnalyzing}
+                    onClick={() => setSubirDialogOpen(true)}
+                  >
+                    <CloudUpload size={18} aria-hidden />
+                  </IconButton>
+                </Tooltip>
+
                 <Tooltip
                   content={
                     varita.phase === "loading-model"
@@ -928,6 +944,12 @@ export default function MapaWorkspace() {
         creating={isAnalyzing}
         onConfirm={(values) => void handleConfirm(values)}
         onAuthError={handleAuthError}
+      />
+
+      <SubirLoteDialog
+        open={subirDialogOpen}
+        onOpenChange={setSubirDialogOpen}
+        onLoteUploaded={handleGeoJSONUploaded}
       />
     </Grid>
   );

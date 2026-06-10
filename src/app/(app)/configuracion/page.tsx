@@ -1,12 +1,5 @@
-import PlaceholderScreen from "@/components/PlaceholderScreen";
-import { Settings } from "lucide-react";
+import ConfiguracionView from "@/components/configuracion/ConfiguracionView";
 
 export default function ConfiguracionPage() {
-  return (
-    <PlaceholderScreen
-      title="Configuración"
-      description="Cuenta, facturación y suscripción se administrarán desde acá. En construcción."
-      icon={Settings}
-    />
-  );
+  return <ConfiguracionView />;
 }

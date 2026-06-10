@@ -10,8 +10,9 @@ import {
   Skeleton,
   Table,
   Text,
+  TextField,
 } from "@radix-ui/themes";
-import { Droplets } from "lucide-react";
+import { Droplets, Search } from "lucide-react";
 import type { CSSProperties } from "react";
 
 const HECTAREAS_FMT = new Intl.NumberFormat("es-AR", {
@@ -45,22 +46,50 @@ const STICKY_HEADER: CSSProperties = {
 type MatrizRiesgoHidricoProps = {
   items: MatrizRiesgoHidricoItem[];
   onSelectLote: (loteId: string) => void;
+  /** Valor del buscador por nombre (controlado por el dashboard). */
+  search?: string;
+  onSearchChange?: (value: string) => void;
 };
 
-/** Cabecera (icono + título + subtítulo). Reutilizada por el skeleton. */
-function MatrizHeader() {
+/** Cabecera (icono + título + subtítulo + buscador). Reutilizada por el skeleton. */
+function MatrizHeader({
+  search,
+  onSearchChange,
+}: {
+  search?: string;
+  onSearchChange?: (value: string) => void;
+}) {
   return (
     <Box className="shrink-0">
-      <Flex align="center" gap="2">
-        <Droplets size={18} aria-hidden style={{ color: "var(--sky-11)" }} />
-        <Heading size="4" weight="medium">
-          Matriz de riesgo hídrico
-        </Heading>
+      <Flex align="center" justify="between" gap="3" wrap="wrap">
+        <Box style={{ minWidth: 0 }}>
+          <Flex align="center" gap="2">
+            <Droplets size={18} aria-hidden style={{ color: "var(--sky-11)" }} />
+            <Heading size="4" weight="medium">
+              Matriz de riesgo hídrico
+            </Heading>
+          </Flex>
+          <Text size="1" className="text-slate-400">
+            Elevación media e historial de inundaciones (Global Flood Database)
+            por lote.
+          </Text>
+        </Box>
+
+        {onSearchChange && (
+          <TextField.Root
+            size="2"
+            placeholder="Buscar lote…"
+            value={search ?? ""}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{ width: 200, flexShrink: 0 }}
+            aria-label="Buscar lote por nombre"
+          >
+            <TextField.Slot>
+              <Search size={15} aria-hidden />
+            </TextField.Slot>
+          </TextField.Root>
+        )}
       </Flex>
-      <Text size="1" className="text-slate-400">
-        Elevación media e historial de inundaciones (Global Flood Database) por
-        lote.
-      </Text>
     </Box>
   );
 }
@@ -91,6 +120,8 @@ function RiesgoBadge({ eventos }: { eventos: number }) {
 export function MatrizRiesgoHidrico({
   items,
   onSelectLote,
+  search,
+  onSearchChange,
 }: MatrizRiesgoHidricoProps) {
   return (
     <Card
@@ -100,12 +131,14 @@ export function MatrizRiesgoHidrico({
       style={CARD_FLEX}
     >
       <Flex direction="column" gap="3" className="min-h-0 flex-1">
-        <MatrizHeader />
+        <MatrizHeader search={search} onSearchChange={onSearchChange} />
 
         {items.length === 0 ? (
           <Box py="6">
             <Text size="2" className="text-slate-400" align="center" as="div">
-              Todavía no hay lotes para analizar.
+              {search && search.trim().length > 0
+                ? "Ningún lote coincide con la búsqueda."
+                : "Todavía no hay lotes para analizar."}
             </Text>
           </Box>
         ) : (

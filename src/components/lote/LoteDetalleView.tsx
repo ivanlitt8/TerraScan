@@ -6,10 +6,12 @@ import { useSaludLote } from "@/hooks/useSaludLote";
 import { clusterizarDetecciones } from "@/lib/incendiosClustering";
 import {
   ApiServiceError,
+  createReporte,
   deleteLote,
   fetchEstablecimientos,
   renameLote,
   setLoteEstablecimiento,
+  uploadReportePdf,
   type EstablecimientoListItem,
 } from "@/services";
 import {
@@ -58,6 +60,7 @@ import { HistorialHidrico } from "./HistorialHidrico";
 import { HistorialNDVI } from "./HistorialNDVI";
 import { RegistroTermico } from "./RegistroTermico";
 import { ScoreSaludCard } from "./ScoreSaludCard";
+import type { LoteReporteData } from "./LoteReportePDF";
 
 const LoteMiniMap = dynamic(() => import("./LoteMiniMap"), {
   ssr: false,
@@ -83,10 +86,7 @@ type LoteDetalleViewProps = {
   loteId: string;
 };
 
-export default function LoteDetalleView({
-  establecimientoId,
-  loteId,
-}: LoteDetalleViewProps) {
+export default function LoteDetalleView({ loteId }: LoteDetalleViewProps) {
   const router = useRouter();
   const {
     phase,
@@ -110,6 +110,9 @@ export default function LoteDetalleView({
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // ── Exportar reporte PDF + guardar en historial ───────────────────────
+  const [exporting, setExporting] = useState(false);
 
   // ── Toast efímero (asignación de establecimiento, etc.) ────────────────
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -213,13 +216,172 @@ export default function LoteDetalleView({
     if (authExpired) handleAuthExpired();
   }, [phase, isAuthError, salud.phase, salud.isAuthError, handleAuthExpired]);
 
-  const handleExportPdf = () => {
-    // Placeholder: la generación del PDF se implementará en una iteración posterior.
-    console.info("[LoteDetalle] Exportar PDF — pendiente de implementación", {
-      loteId,
-      establecimientoId,
-    });
-  };
+  // Establecimientos del usuario (para resolver el nombre en la cabecera del
+  // reporte PDF). Se cargan una vez; el nombre se deriva por memo.
+  const [establecimientos, setEstablecimientos] = useState<
+    EstablecimientoListItem[] | null
+  >(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    fetchEstablecimientos({ signal: controller.signal })
+      .then((list) => {
+        if (!cancelled) setEstablecimientos(list);
+      })
+      .catch(() => {
+        if (!cancelled) setEstablecimientos([]);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, []);
+
+  const establecimientoNombre = useMemo<string | null>(() => {
+    const estId = lote?.establecimientoId;
+    if (!estId || !establecimientos) return null;
+    return establecimientos.find((e) => e.id === estId)?.nombre ?? null;
+  }, [lote?.establecimientoId, establecimientos]);
+
+  // Snapshot satelital best-effort del mini-mapa para el reporte PDF.
+  const [mapaLoteBase64, setMapaLoteBase64] = useState<string | null>(null);
+  const handleMapSnapshot = useCallback((dataUrl: string | null) => {
+    setMapaLoteBase64(dataUrl);
+  }, []);
+
+  const saludSettled = salud.phase === "ready" || salud.phase === "error";
+
+  // Datos planos para la plantilla del reporte PDF. Se mantiene en `null`
+  // (botón "Preparando documento…") hasta que el lote y la salud estén
+  // resueltos. La curva NDVI se dibuja nativa en el PDF (no requiere captura).
+  const reporteData = useMemo<LoteReporteData | null>(() => {
+    if (!lote || !saludSettled) return null;
+
+    const estado =
+      salud.healthScore?.categoria === "Alta"
+        ? "Salud Alta"
+        : salud.healthScore?.categoria === "Moderada"
+          ? "Salud Moderada"
+          : salud.healthScore?.categoria === "Baja"
+            ? "Salud Baja"
+            : "Sin datos";
+
+    const confianzaLabel = (c: "l" | "n" | "h" | null): string =>
+      c === "h" ? "Alta" : c === "n" ? "Nominal" : c === "l" ? "Baja" : "—";
+
+    const ring = lote.poligonoGeoJSON?.geometry?.coordinates?.[0] ?? [];
+    const geometriaPoligono = ring.map(
+      ([lng, lat]) => [lng, lat] as [number, number],
+    );
+
+    return {
+      loteNombre: lote.nombre,
+      establecimientoNombre,
+      generadoEn: new Date(),
+      superficieHa: lote.areaHectareas ?? null,
+      elevacionMedia: analisis?.elevacion ?? null,
+      score: salud.healthScore?.score ?? null,
+      estadoSalud: estado,
+      ndviPromedio: salud.healthScore?.ndviPromedio ?? null,
+      geometriaPoligono,
+      serieNdvi: ndviSerie.serie.map((p) => ({ fecha: p.fecha, ndvi: p.ndvi })),
+      rasterNdviUrl: salud.ndviImgUrl,
+      mapaLoteBase64,
+      inundaciones: (analisis?.inundaciones ?? []).map((f) => ({
+        began: f.began,
+        ended: f.ended,
+        duracionDias: f.duracionDias,
+      })),
+      focos: eventosIncendio.map((ev) => ({
+        fecha: ev.fecha,
+        confianza: confianzaLabel(ev.confianzaMax),
+        frpMax: ev.frpMax,
+        satelites: ev.satelites.join(", "),
+      })),
+    };
+  }, [
+    lote,
+    saludSettled,
+    establecimientoNombre,
+    analisis,
+    salud.healthScore,
+    salud.ndviImgUrl,
+    ndviSerie.serie,
+    mapaLoteBase64,
+    eventosIncendio,
+  ]);
+
+  /**
+   * Exporta el reporte PDF y, en la misma pasada, lo guarda en el historial:
+   *  1. Genera el `Blob` del PDF (import dinámico → mantiene code-split).
+   *  2. Dispara la descarga local inmediata (UX de siempre).
+   *  3. Sube el binario al bucket privado de Supabase Storage.
+   *  4. Persiste la metadata vía `POST /api/reportes`.
+   *
+   * La descarga local nunca se bloquea por el guardado: si falla la subida o el
+   * POST, el usuario igual se queda con su PDF y ve un toast de error.
+   */
+  const handleExportReporte = useCallback(async () => {
+    if (!reporteData || !lote) return;
+
+    setExporting(true);
+    let downloaded = false;
+    try {
+      const { generateReporteBlob, slugify } = await import("./LoteReportePDF");
+      const blob = await generateReporteBlob(reporteData);
+
+      const slug = slugify(lote.nombre);
+      const fechaArchivo = reporteData.generadoEn.toISOString().slice(0, 10);
+      const fileName = `reporte-${slug}-${fechaArchivo}.pdf`;
+
+      // Descarga local inmediata.
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(objectUrl);
+      downloaded = true;
+
+      // Guardado en historial (Storage + metadata).
+      const urlStorage = await uploadReportePdf({
+        blob,
+        loteId: lote.id,
+        slug,
+      });
+      await createReporte({
+        nombre: `Reporte Técnico · ${lote.nombre}`,
+        establecimiento: establecimientoNombre,
+        urlStorage,
+        loteId: lote.id,
+      });
+
+      showToast("success", "Reporte guardado en tu historial.");
+    } catch (cause) {
+      if (cause instanceof ApiServiceError && cause.status === 401) {
+        handleAuthExpired();
+        return;
+      }
+      showToast(
+        "error",
+        downloaded
+          ? "El PDF se descargó, pero no pudimos guardarlo en tu historial."
+          : cause instanceof Error
+            ? cause.message
+            : "No se pudo exportar el reporte.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    reporteData,
+    lote,
+    establecimientoNombre,
+    showToast,
+    handleAuthExpired,
+  ]);
 
   return (
     <Flex
@@ -357,18 +519,31 @@ export default function LoteDetalleView({
                     </IconButton>
                   </Tooltip>
                 )}
-                <Tooltip content="La exportación PDF estará disponible próximamente">
-                  <Button
-                    type="button"
-                    variant="soft"
-                    color="jade"
-                    size="2"
-                    onClick={handleExportPdf}
-                  >
-                    <FileText size={16} aria-hidden />
-                    Exportar Reporte PDF
-                  </Button>
-                </Tooltip>
+                <Button
+                  type="button"
+                  variant="soft"
+                  color="jade"
+                  size="2"
+                  disabled={!reporteData || exporting}
+                  onClick={() => void handleExportReporte()}
+                >
+                  {exporting ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" aria-hidden />
+                      Guardando reporte en historial…
+                    </>
+                  ) : !reporteData && lote ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" aria-hidden />
+                      Preparando documento…
+                    </>
+                  ) : (
+                    <>
+                      <FileText size={16} aria-hidden />
+                      Exportar Reporte PDF
+                    </>
+                  )}
+                </Button>
               </Flex>
             )}
           </Flex>
@@ -471,7 +646,11 @@ export default function LoteDetalleView({
                     <Flex direction="column" gap="3" pr="3">
                       <Card size="2" variant="surface" className="agro-surface" style={CARD_FLEX}>
                         <Flex direction="column" gap="3">
-                          <LoteMiniMap polygon={lote.poligonoGeoJSON} height={200} />
+                          <LoteMiniMap
+                            polygon={lote.poligonoGeoJSON}
+                            height={200}
+                            onSnapshot={handleMapSnapshot}
+                          />
                           <Grid columns="2" gap="3">
                             <KpiTopografico
                               icon={LandPlot}

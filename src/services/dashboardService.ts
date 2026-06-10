@@ -22,6 +22,12 @@ export interface MatrizRiesgoHidricoItem {
   /** Elevación media (m s.n.m.) o `null` si el lote no tiene análisis aún. */
   elevacionMedia: number | null;
   totalEventosInundacion: number;
+  /** Establecimiento del lote o `null` si está sin agrupar. */
+  establecimientoId: string | null;
+  /** Nombre del establecimiento (snapshot) o `null`. */
+  establecimientoNombre: string | null;
+  /** Score de salud histórico del lote o `null` si aún no fue calculado. */
+  score: number | null;
 }
 
 /** Foco de incendio simplificado para el monitor del dashboard. */

@@ -17,6 +17,12 @@ export type UseSaludLoteReturn = {
   healthScore: HealthScoreSummary | null;
   /** Serie NDVI de la ventana base (30 días) para alimentar el gráfico. */
   baseSerie: NDVIStatPoint[];
+  /**
+   * `ObjectURL` del PNG raster NDVI de Sentinel Hub. Se mantiene vivo mientras
+   * el hook esté montado (para poder incrustarlo en el reporte PDF) y se
+   * revoca en el cleanup. `null` hasta resolver o si falla.
+   */
+  ndviImgUrl: string | null;
   error: string | null;
   isAuthError: boolean;
 };
@@ -40,6 +46,7 @@ export function useSaludLote(loteId: string | null): UseSaludLoteReturn {
     null,
   );
   const [baseSerie, setBaseSerie] = useState<NDVIStatPoint[]>([]);
+  const [ndviImgUrl, setNdviImgUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isAuthError, setIsAuthError] = useState(false);
 
@@ -48,11 +55,16 @@ export function useSaludLote(loteId: string | null): UseSaludLoteReturn {
       setPhase("idle");
       setHealthScore(null);
       setBaseSerie([]);
+      setNdviImgUrl(null);
       return;
     }
 
     const controller = new AbortController();
     let cancelled = false;
+    // Guardamos el ObjectURL vivo de esta corrida para revocarlo en el cleanup
+    // (al cambiar de lote o desmontar), evitando fugas sin matar la referencia
+    // que el reporte PDF necesita mientras la ficha está montada.
+    let activeUrl: string | null = null;
 
     setPhase("loading");
     setError(null);
@@ -60,9 +72,13 @@ export function useSaludLote(loteId: string | null): UseSaludLoteReturn {
 
     getSaludAnalisis({ loteId, signal: controller.signal })
       .then(({ objectUrl, stats, healthScore: score }) => {
-        // La ficha no pinta el raster: liberamos el blob apenas llega.
-        revokeNDVIObjectURL(objectUrl);
-        if (cancelled) return;
+        if (cancelled) {
+          // Llegó tarde (lote cambió/desmontó): liberamos y salimos.
+          revokeNDVIObjectURL(objectUrl);
+          return;
+        }
+        activeUrl = objectUrl;
+        setNdviImgUrl(objectUrl);
         setHealthScore(score);
         setBaseSerie(
           [...stats].sort((a, b) => a.fecha.localeCompare(b.fecha)),
@@ -81,14 +97,16 @@ export function useSaludLote(loteId: string | null): UseSaludLoteReturn {
         );
         setHealthScore(null);
         setBaseSerie([]);
+        setNdviImgUrl(null);
         setPhase("error");
       });
 
     return () => {
       cancelled = true;
       controller.abort();
+      if (activeUrl) revokeNDVIObjectURL(activeUrl);
     };
   }, [loteId]);
 
-  return { phase, healthScore, baseSerie, error, isAuthError };
+  return { phase, healthScore, baseSerie, ndviImgUrl, error, isAuthError };
 }

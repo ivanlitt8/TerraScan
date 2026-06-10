@@ -96,6 +96,12 @@ export type MapHandle = {
    * Sustituye cualquier polígono activo.
    */
   setPolygon: (feature: Feature<Polygon>) => void;
+  /**
+   * Encuadra la cámara sobre el bounding box de un polígono (`fitBounds`).
+   * Usado al cargar un GeoJSON externo, donde el lote puede estar en
+   * cualquier parte del mapa y necesitamos feedback visual inmediato.
+   */
+  fitToPolygon: (feature: Feature<Polygon>) => void;
 };
 
 /**
@@ -372,6 +378,18 @@ const Map = forwardRef<MapHandle, MapProps>(function Map(
       emitPolygon(draw);
       notifyCanCloseChange(false);
       notifyDrawModeChange(false);
+    },
+    fitToPolygon: (feature) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const bounds = polygonBounds(feature);
+      if (!bounds) return;
+      map.fitBounds(bounds, {
+        padding: 80,
+        duration: 1500,
+        maxZoom: 16,
+        essential: true,
+      });
     },
   }));
 

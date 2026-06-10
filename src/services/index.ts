@@ -55,3 +55,16 @@ export {
   type EstablecimientoDetalle,
   type EstablecimientoListItem,
 } from "./establecimientosService";
+
+export {
+  createReporte,
+  deleteReporte,
+  fetchReportes,
+  getReporteDownloadUrl,
+  uploadReportePdf,
+  REPORTES_BUCKET,
+  type CreateReporteInput,
+  type ReporteListItem,
+  type ReporteSignedUrl,
+  type UploadReportePdfInput,
+} from "./reportesService";

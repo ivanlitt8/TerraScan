@@ -95,7 +95,7 @@ function DonutHeader() {
         className="text-slate-400"
         style={{ fontSize: SECONDARY_FONT }}
       >
-        Hectáreas por lote · clic en una porción para ver el lote en el mapa.
+        Hectáreas por lote · clic para ver el lote.
       </Text>
     </Box>
   );
